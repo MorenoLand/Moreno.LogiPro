@@ -70,6 +70,7 @@ add_custom_command(
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/resources.gresource.xml"
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-real.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-hero.png"
     VERBATIM
 )
 add_executable(logipro WIN32

@@ -861,7 +861,8 @@ void install_css() {
 }
 
 GtkWidget* mouse_picture(int width, int height) {
-    GtkWidget* picture = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/pro-wireless-real.png");
+    const char* resource = width <= 190 ? "/com/morenoland/logipro/assets/pro-wireless-hero.png" : "/com/morenoland/logipro/assets/pro-wireless-real.png";
+    GtkWidget* picture = gtk_picture_new_for_resource(resource);
     gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
     gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
     gtk_widget_set_size_request(picture, width, height);
@@ -897,6 +898,10 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_margin_end(heading, 18);
     GtkWidget* title_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), title_spacer);
+    GtkWidget* status_pill = label("Reading device", "status-neutral");
+    gtk_widget_set_valign(status_pill, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_end(status_pill, 8);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), status_pill);
     GtkWidget* refresh = gtk_button_new_with_label("Refresh");
     gtk_widget_add_css_class(refresh, "suggested-action");
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh);
@@ -904,31 +909,26 @@ void activate(GtkApplication* application, gpointer) {
 
     auto* state = new UiState();
     g_object_set_data_full(G_OBJECT(window), "logipro-state", state, [](gpointer value) { delete static_cast<UiState*>(value); });
-    state->status = GTK_LABEL(label("Reading device", "status-neutral"));
+    state->status = GTK_LABEL(status_pill);
     state->window = window;
     state->refresh = GTK_BUTTON(refresh);
 
     GtkWidget* page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_widget_add_css_class(page, "page");
-    GtkWidget* status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_widget_add_css_class(status_row, "status-row");
-    gtk_box_append(GTK_BOX(status_row), label("Device status", "section-title"));
-    gtk_box_append(GTK_BOX(status_row), GTK_WIDGET(state->status));
-    gtk_widget_set_hexpand(GTK_WIDGET(state->status), TRUE);
-    gtk_box_append(GTK_BOX(page), status_row);
 
     GtkWidget* overview_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    GtkWidget* hero = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 20);
+    GtkWidget* hero = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_widget_add_css_class(hero, "hero");
+    GtkWidget* hero_top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
     GtkWidget* hero_copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_widget_set_valign(hero_copy, GTK_ALIGN_CENTER);
     gtk_widget_set_hexpand(hero_copy, TRUE);
     gtk_box_append(GTK_BOX(hero_copy), label("PRO WIRELESS", "hero-title"));
     gtk_box_append(GTK_BOX(hero_copy), label("A lightweight HID++ control surface for your mouse.", "hero-caption"));
     gtk_box_append(GTK_BOX(hero_copy), label("No vendor service required.", "hero-caption"));
-    gtk_box_append(GTK_BOX(hero), hero_copy);
-    gtk_box_append(GTK_BOX(hero), mouse_picture(180, 260));
-    gtk_box_append(GTK_BOX(overview_page), hero);
+    gtk_box_append(GTK_BOX(hero_top), hero_copy);
+    gtk_box_append(GTK_BOX(hero_top), mouse_picture(170, 286));
+    gtk_box_append(GTK_BOX(hero), hero_top);
 
     GtkWidget* device_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(device_grid), 10);
@@ -952,7 +952,8 @@ void activate(GtkApplication* application, gpointer) {
     gtk_grid_set_column_homogeneous(GTK_GRID(overview), TRUE);
     gtk_grid_attach(GTK_GRID(overview), card("Device", "The connected receiver and HID++ endpoint.", device_grid), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(overview), card("Onboard profile", "The profile stored inside the mouse or receiver.", profile_grid), 1, 0, 1, 1);
-    gtk_box_append(GTK_BOX(overview_page), overview);
+    gtk_box_append(GTK_BOX(hero), overview);
+    gtk_box_append(GTK_BOX(overview_page), hero);
 
     GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
