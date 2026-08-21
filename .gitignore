@@ -1,0 +1,24 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# Visual Studio and IDE state
+.vs/
+*.suo
+*.user
+*.VC.db
+CMakeUserPresets.json
+
+# Runtime and binary output
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.bin
+logipro-backup-sector-*.bin
+
+# Local tooling and logs
+compile_commands.json
+*.log
