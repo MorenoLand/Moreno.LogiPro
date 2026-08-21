@@ -1,7 +1,5 @@
 #pragma once
 
-#include "logipro/export.hpp"
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,6 +18,6 @@ struct HidDeviceInfo {
     std::uint16_t feature_report_length = 0;
 };
 
-LOGIPRO_API std::vector<HidDeviceInfo> enumerate_logitech_hid();
+std::vector<HidDeviceInfo> enumerate_logitech_hid();
 
 }

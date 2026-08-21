@@ -5,9 +5,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(LOGIPRO_BUILD_CLI "Build the optional command-line client" ON)
-option(LOGIPRO_BUILD_GUI "Build the optional native Windows GUI" OFF)
-
 include(CTest)
 include(GNUInstallDirs)
 
@@ -31,6 +28,7 @@ function(logipro_set_output_directories target)
 endfunction()
 
 add_library(logipro_core SHARED
+    src/api/api.cpp
     src/hid/hid.cpp
     src/hid/capture.cpp
     src/input/raw_input.cpp
@@ -42,6 +40,8 @@ target_include_directories(logipro_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/api
 )
 
 target_compile_definitions(logipro_core PRIVATE LOGIPRO_BUILD_DLL)
@@ -55,43 +55,31 @@ else()
     target_compile_options(logipro_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-if(LOGIPRO_BUILD_CLI)
-    add_executable(logipro
-        src/cli/app.cpp
-        src/cli/main.cpp
-    )
-    target_link_libraries(logipro PRIVATE logipro_core)
-    logipro_set_output_directories(logipro)
-    install(TARGETS logipro RUNTIME DESTINATION bin)
-endif()
-
 if(WIN32)
     target_compile_definitions(logipro_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(logipro_core PRIVATE hid setupapi)
 endif()
 
-if(LOGIPRO_BUILD_GUI)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
-    add_executable(logipro_gui
-        gui/main.cpp
-    )
-    target_link_libraries(logipro_gui PRIVATE logipro_core PkgConfig::GTK4)
-    logipro_set_output_directories(logipro_gui)
-    install(TARGETS logipro_gui RUNTIME DESTINATION bin)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+add_executable(logipro WIN32
+    gui/main.cpp
+    gui/entry.cpp
+    src/cli/app.cpp
+)
+target_link_libraries(logipro PRIVATE logipro_core PkgConfig::GTK4)
+if(WIN32)
+    target_link_libraries(logipro PRIVATE shell32)
 endif()
+logipro_set_output_directories(logipro)
+install(TARGETS logipro RUNTIME DESTINATION bin)
 
 if(MINGW)
     target_link_options(logipro_core PRIVATE -static-libgcc -static-libstdc++)
-    if(LOGIPRO_BUILD_CLI)
-        target_link_options(logipro PRIVATE -static-libgcc -static-libstdc++)
-    endif()
-    if(LOGIPRO_BUILD_GUI)
-        target_link_options(logipro_gui PRIVATE -static-libgcc -static-libstdc++)
-    endif()
+    target_link_options(logipro PRIVATE -static-libgcc -static-libstdc++)
 endif()
 
-if(BUILD_TESTING AND LOGIPRO_BUILD_CLI)
+if(BUILD_TESTING)
     add_test(NAME logipro_version COMMAND logipro --version)
 endif()
 

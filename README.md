@@ -1,61 +1,54 @@
 # Moreno.LogiPro
 
-Moreno.LogiPro is a native Windows C++ library, optional CLI, and optional Win32 GUI for reading and configuring compatible Logitech HID++ devices without Logitech G HUB.
-
-The first hardware target is the Logitech G Pro Wireless M-R0070 through its Lightspeed receiver. The receiver and onboard-profile workflow has been exercised against VID/PID `046D:C539`.
+Moreno.LogiPro is a modular C++ application and C ABI DLL for reading and configuring compatible Logitech HID++ devices without Logitech G HUB. The first hardware target is the Logitech G Pro Wireless M-R0070 through its Lightspeed receiver. The receiver and onboard-profile workflow has been exercised against VID/PID `046D:C539`.
 
 ## Status
 
 This is an early, hardware-backed project.
 
-- `logipro.dll` contains HID enumeration, HID++, onboard-profile, lighting, capture, and host-binding logic.
-- `logipro.exe` is an optional CLI client of the DLL.
-- `logipro_gui` is an optional GTK4 client of the same DLL.
+- `logipro.dll` exposes the device and control surface through the C ABI in `include/logipro/api.h`.
+- `logipro.exe` is the only application executable: it opens the GTK4 GUI by default and dispatches CLI commands when command flags are supplied.
+- The GUI and CLI both call the DLL; neither contains duplicate HID++ transport logic.
 - HID++ discovery, onboard-profile reads, CRC-checked button writes, backup/restore, and onboard lighting disable are implemented for the current target.
 - Support for other Logitech models is not implied by the current target.
 
 ## Build
 
-Requires CMake 3.25 or newer and a C++20 toolchain. Building the optional GUI also requires GTK4 development files and `pkg-config`.
+Requires CMake 3.25 or newer, a C++20 toolchain, GTK4 development files, and `pkg-config`.
 
 ```powershell
-cmake -S . -B build -DLOGIPRO_BUILD_CLI=ON -DLOGIPRO_BUILD_GUI=ON
+cmake -S . -B build
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Set either option to `OFF` when only the DLL or one client is needed. The generated build directory is intentionally ignored by Git.
+Build output is written to the project-root `bin/` directory. `bin/`, `build/`, and `lib/` are ignored by Git.
 
 ## CLI
 
-Run the executable from the project-root `bin` directory:
+Run the same executable with a command flag for diagnostics or automation:
 
 ```powershell
 .\bin\logipro.exe --probe-hidpp
 .\bin\logipro.exe --profile-bind 7 F13
 .\bin\logipro.exe --profile-restore
 .\bin\logipro.exe --profile-lighting-off
-```
-
-`--probe-hidpp` is read-only. Profile writes back up the active sector in the current working directory, update only the requested button or lighting records, recompute the sector CRC, and verify the readback. Restore preserves the current lighting records so restoring a button profile does not unexpectedly re-enable an earlier lighting configuration.
-
-Host-side bindings are temporary while the process runs:
-
-```powershell
 .\bin\logipro.exe --bind-back F15 --bind-forward F16
 ```
 
-`--capture-hid` and `--watch-buttons` are read-only diagnostics. They require live input while running and stop with `Ctrl+C`.
+With no command flag, the GTK4 interface opens. `--debug` enables library diagnostics only when a command is supplied or when the GUI is started from an existing terminal; LogiPro never allocates a new console.
+
+`--probe-hidpp` is read-only. Profile writes back up the active sector in the current working directory, update only the requested button or lighting records, recompute the sector CRC, and verify the readback. Restore preserves the current lighting records so restoring a button profile does not unexpectedly re-enable an earlier lighting configuration.
+
+Host-side bindings are temporary while the process runs. `--capture-hid` and `--watch-buttons` are read-only diagnostics that require live input and stop with `Ctrl+C`.
 
 ## GUI
 
-The GUI is a small GTK4 client with refresh and onboard-lighting controls. It links against `logipro.dll` on Windows or the platform library on other systems; it does not duplicate HID++ logic.
+The GTK4 interface presents structured device, onboard-profile, lighting, and button-map views with refresh and onboard-lighting controls. It links against `logipro.dll` on Windows or the platform library on other systems; it does not display raw probe text or duplicate HID++ logic.
 
 ```powershell
-.\bin\logipro_gui.exe
+.\bin\logipro.exe
 ```
-
-The CLI remains independently usable for diagnostics and automation.
 
 ## Architecture
 
@@ -65,21 +58,24 @@ logipro.dll
 ├── HID++ feature discovery and device reads
 ├── onboard profile storage and CRC verification
 ├── lighting and button operations
-└── optional capture and host-side input bindings
-     ├── logipro.exe      CLI client
-     └── logipro_gui      GTK4 GUI client
+├── capture and host-side input bindings
+└── C ABI in include/logipro/api.h
+logipro.exe
+├── GTK4 GUI (default)
+└── CLI dispatch for command flags
 ```
 
-Public headers live in `include/logipro`. Implementation is organized by domain under `src`: `cli` contains presentation and argument parsing, `hid` contains Windows HID transport and capture, `hidpp` contains protocol/device logic, and `input` contains raw-input and host-hook handling. GUI code is in `gui`. The exported interface is a C++ API intended for clients built with the project toolchain.
+The public DLL contract is the C-compatible `include/logipro/api.h`; it uses opaque snapshots, fixed-width integers, caller-provided buffers, and status codes. Implementation is organized by domain under `src`: `api` adapts the C contract, `cli` contains command parsing and presentation, `hid` contains HID transport and capture, `hidpp` contains protocol/device logic, and `input` contains raw-input and host-hook handling. GTK code is in `gui`.
 
 ```text
 src/
-├── cli/       optional command-line client
+├── api/       C ABI adapter and library debug state
+├── cli/       CLI dispatch compiled into the application
 ├── hid/       Windows HID enumeration and report capture
 ├── hidpp/     HID++ transport, feature discovery, profiles, lighting
 └── input/     raw input and host-side mouse hooks
-gui/           optional GTK4 client
-include/       exported library headers
+gui/           GTK4 application and platform entrypoint
+include/       C ABI header and internal C++ model headers
 ```
 
 ## Safety

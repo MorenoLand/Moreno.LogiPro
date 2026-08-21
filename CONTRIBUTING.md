@@ -9,7 +9,7 @@ Open an issue for substantial protocol or architecture changes. Small fixes and 
 Build and test on Windows with:
 
 ```powershell
-cmake -S . -B build -DLOGIPRO_BUILD_CLI=ON -DLOGIPRO_BUILD_GUI=ON
+cmake -S . -B build
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```

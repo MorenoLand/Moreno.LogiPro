@@ -1,5 +1,7 @@
 #include "logipro/hidpp.hpp"
 
+#include "debug.hpp"
+
 #ifdef _WIN32
 
 #include <windows.h>
@@ -14,9 +16,48 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <streambuf>
 #include <utility>
 
 namespace {
+
+class NullBuffer : public std::streambuf {
+protected:
+    int_type overflow(int_type character) override { return traits_type::not_eof(character); }
+};
+
+class NullWideBuffer : public std::wstreambuf {
+protected:
+    int_type overflow(int_type character) override { return traits_type::not_eof(character); }
+};
+
+class ScopedOutputSilencer {
+public:
+    ScopedOutputSilencer() {
+        if (logipro::debug_enabled()) return;
+        old_cout_ = std::cout.rdbuf(&null_);
+        old_cerr_ = std::cerr.rdbuf(&null_);
+        old_wcout_ = std::wcout.rdbuf(&wide_null_);
+        old_wcerr_ = std::wcerr.rdbuf(&wide_null_);
+        silenced_ = true;
+    }
+    ~ScopedOutputSilencer() {
+        if (!silenced_) return;
+        std::cout.rdbuf(old_cout_);
+        std::cerr.rdbuf(old_cerr_);
+        std::wcout.rdbuf(old_wcout_);
+        std::wcerr.rdbuf(old_wcerr_);
+    }
+
+private:
+    NullBuffer null_;
+    NullWideBuffer wide_null_;
+    std::streambuf* old_cout_ = nullptr;
+    std::streambuf* old_cerr_ = nullptr;
+    std::wstreambuf* old_wcout_ = nullptr;
+    std::wstreambuf* old_wcerr_ = nullptr;
+    bool silenced_ = false;
+};
 
 constexpr std::uint8_t short_report_id = 0x10;
 constexpr std::uint8_t long_report_id = 0x11;
@@ -425,17 +466,21 @@ std::optional<logipro::HidppOnboardProfileInfo> read_onboard_profiles(HANDLE han
 
 std::optional<logipro::HidppDeviceInfo> probe_interface(const logipro::HidDeviceInfo& interface, std::uint8_t device_index) {
     if (interface.usage_page != 0xff00 || std::max({interface.input_report_length, interface.output_report_length, interface.feature_report_length}) < long_report_length) {
+        if (logipro::debug_enabled()) std::wcerr << L"HID++ skip " << interface.path << L" usage=0x" << std::hex << interface.usage_page << L" reports=" << std::dec << std::max({interface.input_report_length, interface.output_report_length, interface.feature_report_length}) << L'\n';
         return std::nullopt;
     }
     const auto connection = open_connection(interface.path);
     if (!connection) {
+        if (logipro::debug_enabled()) std::wcerr << L"HID++ open failed " << interface.path << L"\n";
         return std::nullopt;
     }
     const std::vector<std::uint8_t> ping_parameters = {0x00, 0x00, 0xaa};
     const auto ping = call(connection->get(), interface, device_index, 0x00, 0x10, ping_parameters);
     if (!ping || ping->size() < 2) {
+        if (logipro::debug_enabled()) std::wcerr << L"HID++ ping failed " << interface.path << L" index=" << static_cast<unsigned>(device_index) << L"\n";
         return std::nullopt;
     }
+    if (logipro::debug_enabled()) std::wcerr << L"HID++ ping ok " << interface.path << L" index=" << static_cast<unsigned>(device_index) << L"\n";
 
     logipro::HidppDeviceInfo result;
     result.path = interface.path;
@@ -651,14 +696,17 @@ std::vector<HidppDeviceInfo> probe_logitech_hidpp(const std::vector<HidDeviceInf
 }
 
 int bind_onboard_button(std::uint8_t button, const std::array<std::uint8_t, 4>& spec) {
+    ScopedOutputSilencer silencer;
     return bind_onboard_button_impl(button, spec);
 }
 
 int restore_onboard_profile() {
+    ScopedOutputSilencer silencer;
     return restore_onboard_profile_impl();
 }
 
 int disable_onboard_lighting() {
+    ScopedOutputSilencer silencer;
     return disable_onboard_lighting_impl();
 }
 

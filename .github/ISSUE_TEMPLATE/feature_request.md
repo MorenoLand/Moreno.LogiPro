@@ -11,7 +11,7 @@ What workflow is currently missing?
 
 ## Proposed behavior
 
-Describe the smallest useful behavior and whether it belongs in the DLL, CLI, or GUI.
+Describe the smallest useful behavior and whether it belongs in the DLL or the LogiPro application surface.
 
 ## Hardware evidence
 

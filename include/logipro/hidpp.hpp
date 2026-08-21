@@ -1,6 +1,5 @@
 #pragma once
 
-#include "logipro/export.hpp"
 #include "logipro/hid.hpp"
 
 #include <array>
@@ -87,9 +86,9 @@ struct HidppDeviceInfo {
     HidppLightingInfo lighting;
 };
 
-LOGIPRO_API std::vector<HidppDeviceInfo> probe_logitech_hidpp(const std::vector<HidDeviceInfo>& interfaces);
-LOGIPRO_API int bind_onboard_button(std::uint8_t button, const std::array<std::uint8_t, 4>& spec);
-LOGIPRO_API int restore_onboard_profile();
-LOGIPRO_API int disable_onboard_lighting();
+std::vector<HidppDeviceInfo> probe_logitech_hidpp(const std::vector<HidDeviceInfo>& interfaces);
+int bind_onboard_button(std::uint8_t button, const std::array<std::uint8_t, 4>& spec);
+int restore_onboard_profile();
+int disable_onboard_lighting();
 
 }
