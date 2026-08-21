@@ -795,7 +795,7 @@ void install_css() {
         "* { font-family: 'Segoe UI', sans-serif; }"
         "window { background: #0b0d10; color: #f3f6fb; }"
         "headerbar { background: #0b0d10; border-bottom: 1px solid #252932; box-shadow: none; min-height: 52px; padding: 0 10px; }"
-        ".page { padding: 16px 24px 20px; }"
+        ".page { padding: 12px 18px 16px; }"
         ".status-row { background: #151a20; border: 1px solid #252c35; border-radius: 10px; padding: 8px 12px; }"
         ".app-title { color: #f5f7fb; font-size: 19px; font-weight: 800; }"
         ".app-subtitle { color: #747d8d; font-size: 11px; }"
@@ -847,7 +847,7 @@ void install_css() {
         ".mouse-picture { padding: 6px; }"
         ".hotspot { background: #20252c; border: 1px solid #3a424e; color: #eaf1f8; font-size: 11px; padding: 6px 9px; }"
         ".hotspot:hover { background: #168fdf; border-color: #49baff; }"
-        ".hero { background: linear-gradient(135deg, #1a2027, #121519); border: 1px solid #2d3540; border-radius: 14px; padding: 15px 18px; }"
+        ".hero { background: #000000; border: 1px solid #2d3540; border-radius: 14px; padding: 12px 16px; }"
         ".hero-title { color: #f5f7fb; font-size: 23px; font-weight: 800; }"
         ".hero-caption { color: #8993a2; font-size: 12px; }"
         ".hero-stat { color: #2caeff; font-size: 25px; font-weight: 800; }"
@@ -861,9 +861,12 @@ void install_css() {
 }
 
 GtkWidget* mouse_picture(int width, int height) {
-    GtkWidget* picture = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/logipro-mouse.svg");
+    GtkWidget* picture = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/pro-wireless-real.png");
     gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
+    gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
     gtk_widget_set_size_request(picture, width, height);
+    gtk_widget_set_halign(picture, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(picture, GTK_ALIGN_CENTER);
     gtk_widget_add_css_class(picture, "mouse-picture");
     return picture;
 }
@@ -905,7 +908,7 @@ void activate(GtkApplication* application, gpointer) {
     state->window = window;
     state->refresh = GTK_BUTTON(refresh);
 
-    GtkWidget* page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
+    GtkWidget* page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_widget_add_css_class(page, "page");
     GtkWidget* status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_add_css_class(status_row, "status-row");
@@ -914,7 +917,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_hexpand(GTK_WIDGET(state->status), TRUE);
     gtk_box_append(GTK_BOX(page), status_row);
 
-    GtkWidget* overview_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
+    GtkWidget* overview_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget* hero = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 20);
     gtk_widget_add_css_class(hero, "hero");
     GtkWidget* hero_copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -924,7 +927,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(hero_copy), label("A lightweight HID++ control surface for your mouse.", "hero-caption"));
     gtk_box_append(GTK_BOX(hero_copy), label("No vendor service required.", "hero-caption"));
     gtk_box_append(GTK_BOX(hero), hero_copy);
-    gtk_box_append(GTK_BOX(hero), mouse_picture(190, 235));
+    gtk_box_append(GTK_BOX(hero), mouse_picture(180, 260));
     gtk_box_append(GTK_BOX(overview_page), hero);
 
     GtkWidget* device_grid = gtk_grid_new();
@@ -951,8 +954,8 @@ void activate(GtkApplication* application, gpointer) {
     gtk_grid_attach(GTK_GRID(overview), card("Onboard profile", "The profile stored inside the mouse or receiver.", profile_grid), 1, 0, 1, 1);
     gtk_box_append(GTK_BOX(overview_page), overview);
 
-    GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
-    GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
+    GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     state->sensitivity_box = sensitivity_box;
     GtkWidget* dpi_info_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(dpi_info_grid), 10);
@@ -1135,7 +1138,6 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(battery_row), GTK_WIDGET(state->lighting_battery));
     gtk_box_append(GTK_BOX(lighting_visual), battery_row);
     GtkWidget* lighting_picture = mouse_picture(300, 340);
-    gtk_widget_set_vexpand(lighting_picture, TRUE);
     gtk_box_append(GTK_BOX(lighting_visual), lighting_picture);
     GtkWidget* lighting_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(lighting_grid), 8);
@@ -1147,7 +1149,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_grid_attach(GTK_GRID(lighting_columns), card("Lighting preview", "Primary and logo zones are shown together.", lighting_visual), 1, 0, 1, 1);
     gtk_box_append(GTK_BOX(lighting_page), lighting_columns);
 
-    GtkWidget* mapping_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
+    GtkWidget* mapping_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget* mouse_visual = gtk_overlay_new();
     gtk_overlay_set_child(GTK_OVERLAY(mouse_visual), mouse_picture(340, 430));
     mouse_hotspot(mouse_visual, "Primary", GTK_ALIGN_START, GTK_ALIGN_START, 100, 0, 0);

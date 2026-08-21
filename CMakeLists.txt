@@ -69,7 +69,7 @@ add_custom_command(
     COMMAND "${GLIB_COMPILE_RESOURCES}" --sourcedir=${CMAKE_CURRENT_SOURCE_DIR}/gui --generate-source --target=${LOGIPRO_GUI_RESOURCE_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/gui/resources.gresource.xml
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/resources.gresource.xml"
-        "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/logipro-mouse.svg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-real.png"
     VERBATIM
 )
 add_executable(logipro WIN32
