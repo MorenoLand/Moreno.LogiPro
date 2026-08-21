@@ -297,6 +297,19 @@ int logipro_snapshot_get_lighting_zone(const logipro_snapshot_t* snapshot, size_
     out_info->effect = zone.effect;
     out_info->settings_readable = zone.settings_readable ? 1 : 0;
     out_info->settings_zone = zone.settings_zone;
+    std::memcpy(out_info->effect_parameters, zone.parameters.data(), zone.parameters.size());
+    return LOGIPRO_OK;
+}
+
+int logipro_snapshot_get_lighting_effect_id(const logipro_snapshot_t* snapshot, size_t device_index, size_t zone_index, size_t effect_index, uint16_t* out_effect_id) {
+    clear_error();
+    if (validate_snapshot(snapshot) != LOGIPRO_OK || out_effect_id == nullptr) return out_effect_id == nullptr ? fail(LOGIPRO_INVALID_ARGUMENT, "Output lighting effect ID is null.") : LOGIPRO_INVALID_ARGUMENT;
+    if (device_index >= snapshot->devices.size()) return fail(LOGIPRO_NOT_FOUND, "HID++ device index is out of range.");
+    const auto& zones = snapshot->devices[device_index].lighting.zones;
+    if (zone_index >= zones.size()) return fail(LOGIPRO_NOT_FOUND, "Lighting zone index is out of range.");
+    const auto& effects = zones[zone_index].effect_ids;
+    if (effect_index >= effects.size()) return fail(LOGIPRO_NOT_FOUND, "Lighting effect index is out of range.");
+    *out_effect_id = effects[effect_index];
     return LOGIPRO_OK;
 }
 
@@ -347,6 +360,30 @@ int logipro_profile_dpi_set_default(uint8_t slot) {
         return fail(LOGIPRO_INTERNAL_ERROR, error.what());
     } catch (...) {
         return fail(LOGIPRO_INTERNAL_ERROR, "Unknown default DPI operation error.");
+    }
+}
+
+int logipro_lighting_set_effect(uint16_t effect_id, uint16_t period_ms, uint8_t brightness) {
+    clear_error();
+    if (period_ms == 0 || brightness > 100) return fail(LOGIPRO_INVALID_ARGUMENT, "Lighting period must be greater than zero and brightness must be 0-100.");
+    try {
+        return operation_result(logipro::set_lighting_effect_settings(effect_id, period_ms, brightness));
+    } catch (const std::exception& error) {
+        return fail(LOGIPRO_INTERNAL_ERROR, error.what());
+    } catch (...) {
+        return fail(LOGIPRO_INTERNAL_ERROR, "Unknown lighting-effect operation error.");
+    }
+}
+
+int logipro_lighting_set_software_control(uint8_t enabled) {
+    clear_error();
+    if (enabled > 1) return fail(LOGIPRO_INVALID_ARGUMENT, "Lighting software control must be 0 or 1.");
+    try {
+        return operation_result(logipro::set_lighting_software_control(enabled != 0));
+    } catch (const std::exception& error) {
+        return fail(LOGIPRO_INTERNAL_ERROR, error.what());
+    } catch (...) {
+        return fail(LOGIPRO_INTERNAL_ERROR, "Unknown lighting-control operation error.");
     }
 }
 

@@ -128,6 +128,9 @@ int bind_onboard_button(std::uint8_t button, const std::array<std::uint8_t, 4>& 
 int set_dpi(std::uint8_t sensor, std::uint16_t dpi);
 int set_onboard_dpi(std::uint8_t slot, std::uint16_t dpi);
 int set_onboard_default_dpi(std::uint8_t slot);
+int set_lighting_effect(std::uint16_t effect_id);
+int set_lighting_effect_settings(std::uint16_t effect_id, std::uint16_t period_ms, std::uint8_t brightness);
+int set_lighting_software_control(bool enabled);
 int restore_onboard_profile();
 int disable_onboard_lighting();
 

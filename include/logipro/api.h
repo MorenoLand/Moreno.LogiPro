@@ -103,6 +103,7 @@ typedef struct {
     uint8_t effect;
     uint8_t settings_readable;
     uint8_t settings_zone;
+    uint8_t effect_parameters[10];
 } logipro_lighting_zone_info_t;
 
 typedef struct {
@@ -139,10 +140,13 @@ LOGIPRO_C_API int logipro_snapshot_get_dpi_sensor(const logipro_snapshot_t* snap
 LOGIPRO_C_API int logipro_snapshot_get_dpi_value(const logipro_snapshot_t* snapshot, size_t device_index, size_t sensor_index, size_t value_index, uint16_t* out_dpi);
 LOGIPRO_C_API int logipro_snapshot_get_active_lighting(const logipro_snapshot_t* snapshot, size_t device_index, size_t lighting_index, uint8_t out_record[11]);
 LOGIPRO_C_API int logipro_snapshot_get_lighting_zone(const logipro_snapshot_t* snapshot, size_t device_index, size_t zone_index, logipro_lighting_zone_info_t* out_info);
+LOGIPRO_C_API int logipro_snapshot_get_lighting_effect_id(const logipro_snapshot_t* snapshot, size_t device_index, size_t zone_index, size_t effect_index, uint16_t* out_effect_id);
 LOGIPRO_C_API int logipro_profile_bind(uint8_t button, const uint8_t spec[4]);
 LOGIPRO_C_API int logipro_dpi_set(uint8_t sensor, uint16_t dpi);
 LOGIPRO_C_API int logipro_profile_dpi_set(uint8_t slot, uint16_t dpi);
 LOGIPRO_C_API int logipro_profile_dpi_set_default(uint8_t slot);
+LOGIPRO_C_API int logipro_lighting_set_effect(uint16_t effect_id, uint16_t period_ms, uint8_t brightness);
+LOGIPRO_C_API int logipro_lighting_set_software_control(uint8_t enabled);
 LOGIPRO_C_API int logipro_profile_restore(void);
 LOGIPRO_C_API int logipro_profile_lighting_off(void);
 LOGIPRO_C_API int logipro_capture_hid(void);

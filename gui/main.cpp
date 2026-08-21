@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -39,10 +40,20 @@ struct UiState {
     GtkLabel* lighting_state = nullptr;
     GtkLabel* lighting_zones = nullptr;
     GtkLabel* lighting_control = nullptr;
+    GtkLabel* lighting_battery = nullptr;
+    GtkLabel* lighting_effect_hint = nullptr;
+    GtkLabel* lighting_rate_value = nullptr;
+    GtkLabel* lighting_brightness_value = nullptr;
     GtkGrid* buttons_grid = nullptr;
     GtkWindow* window = nullptr;
     GtkButton* refresh = nullptr;
     GtkButton* lighting_off = nullptr;
+    GtkButton* lighting_sync = nullptr;
+    GtkDropDown* lighting_effect = nullptr;
+    GtkSwitch* lighting_windows = nullptr;
+    GtkScale* lighting_rate = nullptr;
+    GtkScale* lighting_brightness = nullptr;
+    GtkWidget* lighting_controls = nullptr;
     GtkWidget* sensitivity_box = nullptr;
     GtkScale* dpi_live_scale = nullptr;
     GtkLabel* dpi_live_value = nullptr;
@@ -63,8 +74,11 @@ struct UiState {
     double dpi_min = 50;
     double dpi_max = 25600;
     double dpi_step = 50;
+    std::array<std::uint16_t, 16> lighting_effect_ids{};
+    std::size_t lighting_effect_count = 0;
     bool busy = false;
     bool lighting_available = false;
+    bool lighting_controls_available = false;
     bool dpi_available = false;
 };
 
@@ -80,6 +94,16 @@ struct DpiOperation {
     std::uint8_t sensor = 0;
     std::uint8_t slot = 0;
     std::uint16_t dpi = 0;
+};
+
+enum class LightingOperationKind { Effect, SoftwareControl };
+
+struct LightingOperation {
+    LightingOperationKind kind;
+    std::uint16_t effect_id = 0;
+    std::uint16_t period_ms = 8000;
+    std::uint8_t brightness = 100;
+    bool enabled = false;
 };
 
 bool has_flag(int argc, char* const argv[], std::string_view flag) {
@@ -118,6 +142,7 @@ void set_busy(UiState* state, bool busy) {
     state->busy = busy;
     gtk_widget_set_sensitive(GTK_WIDGET(state->refresh), !busy);
     gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), !busy && state->lighting_available);
+    gtk_widget_set_sensitive(state->lighting_controls, !busy && state->lighting_controls_available);
     gtk_widget_set_sensitive(state->sensitivity_box, !busy && state->dpi_available);
 }
 
@@ -146,6 +171,42 @@ std::string hex_value(unsigned int value, int width) {
     std::ostringstream output;
     output << "0x" << std::uppercase << std::hex << std::setw(width) << std::setfill('0') << value;
     return output.str();
+}
+
+std::string lighting_effect_name(std::uint16_t effect_id) {
+    switch (effect_id) {
+        case 0: return "Off";
+        case 1: return "Fixed";
+        case 3: return "Cycle";
+        case 4: return "Wave";
+        case 5: return "Starlight";
+        case 6: return "Light on press";
+        case 7: return "Audio visualizer";
+        case 8: return "Boot / demo";
+        case 10: return "Breathing";
+        case 11: return "Ripple";
+        case 12: return "Custom";
+        default: return "Effect " + hex_value(effect_id, 2);
+    }
+}
+
+void update_lighting_effect_model(UiState* state, const std::array<std::uint16_t, 16>& ids, std::size_t count, std::size_t selected) {
+    if (state->lighting_effect == nullptr) return;
+    state->lighting_effect_ids = ids;
+    state->lighting_effect_count = std::min(count, state->lighting_effect_ids.size());
+    std::vector<std::string> names;
+    std::vector<const char*> references;
+    if (state->lighting_effect_count == 0) {
+        names.emplace_back("Unavailable");
+    } else {
+        for (std::size_t index = 0; index < state->lighting_effect_count; ++index) names.push_back(lighting_effect_name(state->lighting_effect_ids[index]));
+    }
+    for (const auto& name : names) references.push_back(name.c_str());
+    references.push_back(nullptr);
+    GtkStringList* model = gtk_string_list_new(references.data());
+    gtk_drop_down_set_model(state->lighting_effect, G_LIST_MODEL(model));
+    gtk_drop_down_set_selected(state->lighting_effect, state->lighting_effect_count == 0 ? 0 : static_cast<guint>(std::min(selected, state->lighting_effect_count - 1)));
+    g_object_unref(model);
 }
 
 std::string hid_key_name(std::uint8_t key) {
@@ -275,7 +336,16 @@ void reset_ui(UiState* state) {
     set_text(state->lighting_state, "Unavailable");
     set_text(state->lighting_zones, "—");
     set_text(state->lighting_control, "—");
+    set_text(state->lighting_battery, "Unavailable");
+    set_text(state->lighting_effect_hint, "No live lighting effects reported");
+    set_text(state->lighting_rate_value, "8000 ms");
+    set_text(state->lighting_brightness_value, "100%");
+    if (state->lighting_windows != nullptr) gtk_switch_set_active(state->lighting_windows, FALSE);
+    if (state->lighting_rate != nullptr) gtk_range_set_value(GTK_RANGE(state->lighting_rate), 8000);
+    if (state->lighting_brightness != nullptr) gtk_range_set_value(GTK_RANGE(state->lighting_brightness), 100);
+    update_lighting_effect_model(state, {}, 0, 0);
     state->lighting_available = false;
+    state->lighting_controls_available = false;
     state->dpi_available = false;
     gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), FALSE);
     clear_buttons(state);
@@ -341,6 +411,65 @@ void update_dpi_view(UiState* state, const logipro_snapshot_t* snapshot, const l
     update_dpi_controls(state);
 }
 
+bool lighting_zone_supports(const logipro_snapshot_t* snapshot, std::size_t zone_index, std::uint16_t effect_id) {
+    logipro_lighting_zone_info_t zone{};
+    if (logipro_snapshot_get_lighting_zone(snapshot, 0, zone_index, &zone) != LOGIPRO_OK || !zone.effect_readable) return false;
+    for (std::size_t index = 0; index < zone.effect_count; ++index) {
+        std::uint16_t candidate = 0;
+        if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, zone_index, index, &candidate) == LOGIPRO_OK && candidate == effect_id) return true;
+    }
+    return false;
+}
+
+void update_lighting_view(UiState* state, const logipro_snapshot_t* snapshot, const logipro_device_info_t& device) {
+    set_text(state->lighting_battery, battery_text(device));
+    state->lighting_controls_available = false;
+    std::array<std::uint16_t, 16> common{};
+    std::size_t common_count = 0;
+    std::uint16_t current_effect = 0;
+    logipro_lighting_zone_info_t primary{};
+    if (device.lighting_readable && device.lighting_zone_records > 0 && logipro_snapshot_get_lighting_zone(snapshot, 0, 0, &primary) == LOGIPRO_OK && primary.effect_readable) {
+        current_effect = primary.effect;
+        for (std::size_t index = 0; index < primary.effect_count && common_count < common.size(); ++index) {
+            std::uint16_t effect_id = 0;
+            if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, 0, index, &effect_id) != LOGIPRO_OK || std::find(common.begin(), common.begin() + common_count, effect_id) != common.begin() + common_count) continue;
+            bool supported = true;
+            for (std::size_t zone = 1; zone < device.lighting_zone_records; ++zone) {
+                if (!lighting_zone_supports(snapshot, zone, effect_id)) {
+                    supported = false;
+                    break;
+                }
+            }
+            if (supported) common[common_count++] = effect_id;
+        }
+        state->lighting_controls_available = device.lighting_software_control_readable && common_count > 0;
+        std::size_t selected = 0;
+        for (std::size_t index = 0; index < common_count; ++index) if (common[index] == current_effect) selected = index;
+        update_lighting_effect_model(state, common, common_count, selected);
+        set_text(state->lighting_effect_hint, std::to_string(device.lighting_zone_records) + " zones • " + lighting_effect_name(current_effect));
+        unsigned int period = 8000;
+        unsigned int brightness = 100;
+        if (current_effect == 3 || current_effect == 10 || current_effect == 11) {
+            period = (static_cast<unsigned int>(primary.effect_parameters[5]) << 8) | primary.effect_parameters[6];
+            brightness = primary.effect_parameters[7] == 0 ? 100 : primary.effect_parameters[7];
+        }
+        period = std::clamp(period, 100u, 60000u);
+        brightness = std::min(brightness, 100u);
+        gtk_range_set_value(GTK_RANGE(state->lighting_rate), period);
+        gtk_range_set_value(GTK_RANGE(state->lighting_brightness), brightness);
+        set_text(state->lighting_rate_value, std::to_string(period) + " ms");
+        set_text(state->lighting_brightness_value, std::to_string(brightness) + "%");
+    } else {
+        update_lighting_effect_model(state, common, 0, 0);
+        set_text(state->lighting_effect_hint, "No live lighting effects reported");
+        gtk_range_set_value(GTK_RANGE(state->lighting_rate), 8000);
+        gtk_range_set_value(GTK_RANGE(state->lighting_brightness), 100);
+        set_text(state->lighting_rate_value, "8000 ms");
+        set_text(state->lighting_brightness_value, "100%");
+    }
+    if (state->lighting_windows != nullptr) gtk_switch_set_active(state->lighting_windows, device.lighting_software_control != 0);
+}
+
 void apply_snapshot(UiState* state, const SnapshotResult& result) {
     const int status = result.status;
     if (status != LOGIPRO_OK || result.snapshot == nullptr || logipro_snapshot_device_count(result.snapshot) == 0) {
@@ -382,6 +511,7 @@ void apply_snapshot(UiState* state, const SnapshotResult& result) {
         set_text(state->lighting_zones, "—");
         set_text(state->lighting_control, "—");
     }
+    update_lighting_view(state, result.snapshot, device);
     state->lighting_available = device.onboard_profiles_readable != 0;
     clear_buttons(state);
     const std::uint8_t button_count = device.button_count > 8 ? 8 : device.button_count;
@@ -458,6 +588,50 @@ void lighting_off_clicked(GtkButton*, gpointer data) {
         g_task_return_int(task, logipro_profile_lighting_off());
     });
     g_object_unref(task);
+}
+
+void destroy_lighting_operation(gpointer data) {
+    delete static_cast<LightingOperation*>(data);
+}
+
+void start_lighting_operation(UiState* state, const LightingOperation& operation, const char* status) {
+    if (state->busy) return;
+    set_busy(state, true);
+    set_status(state, status, "status-neutral");
+    GTask* task = g_task_new(G_OBJECT(state->window), nullptr, lighting_complete, nullptr);
+    g_task_set_task_data(task, new LightingOperation(operation), destroy_lighting_operation);
+    g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer task_data, GCancellable*) {
+        const auto& operation = *static_cast<LightingOperation*>(task_data);
+        const int result = operation.kind == LightingOperationKind::Effect ? logipro_lighting_set_effect(operation.effect_id, operation.period_ms, operation.brightness) : logipro_lighting_set_software_control(operation.enabled ? 1 : 0);
+        g_task_return_int(task, result);
+    });
+    g_object_unref(task);
+}
+
+void lighting_sync_clicked(GtkButton*, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (state->lighting_effect_count == 0 || state->lighting_effect == nullptr) return;
+    const auto selected = gtk_drop_down_get_selected(state->lighting_effect);
+    if (selected >= state->lighting_effect_count) return;
+    const auto period = static_cast<std::uint16_t>(std::clamp(std::lround(gtk_range_get_value(GTK_RANGE(state->lighting_rate))), 100l, 60000l));
+    const auto brightness = static_cast<std::uint8_t>(std::clamp(std::lround(gtk_range_get_value(GTK_RANGE(state->lighting_brightness))), 0l, 100l));
+    start_lighting_operation(state, {LightingOperationKind::Effect, state->lighting_effect_ids[selected], period, brightness, false}, "Updating lighting");
+}
+
+gboolean lighting_windows_changed(GtkSwitch*, gboolean active, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (!state->busy) start_lighting_operation(state, {LightingOperationKind::SoftwareControl, 0, 8000, 100, active != FALSE}, "Updating lighting control");
+    return FALSE;
+}
+
+void lighting_rate_changed(GtkRange* range, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    set_text(state->lighting_rate_value, std::to_string(static_cast<unsigned int>(std::lround(gtk_range_get_value(range)))) + " ms");
+}
+
+void lighting_brightness_changed(GtkRange* range, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    set_text(state->lighting_brightness_value, std::to_string(static_cast<unsigned int>(std::lround(gtk_range_get_value(range)))) + "%");
 }
 
 void destroy_dpi_operation(gpointer data) {
@@ -639,10 +813,11 @@ void install_css() {
         ".status-error { background: #401b21; color: #ff8c99; }"
         ".good { color: #73e5a3; }"
         ".warning { color: #ffc85c; }"
-        ".tab-switcher { background: #15181d; border: 1px solid #2a2e36; border-radius: 8px; padding: 2px; }"
-        ".tab-switcher button { color: #8992a1; border-radius: 6px; padding: 5px 12px; min-height: 28px; }"
+        ".tab-switcher { background: transparent; border: none; border-radius: 0; padding: 0; }"
+        ".tab-switcher button { background: transparent; border: none; box-shadow: none; color: #8992a1; border-radius: 5px; padding: 4px 11px; min-height: 26px; }"
+        ".tab-switcher button:hover { background: #171c22; color: #f2f6fb; }"
         ".tab-switcher button:checked { background: #27303a; color: #f2f6fb; }"
-        "button { background: #252a31; color: #e8edf5; border: 1px solid #343a45; border-radius: 6px; padding: 5px 10px; min-height: 28px; }"
+        "button { background: #252a31; color: #e8edf5; border: 1px solid #343a45; border-radius: 6px; padding: 4px 9px; min-height: 26px; }"
         "button:hover { background: #303640; }"
         "button.suggested-action { background: #168ee2; color: #ffffff; border-color: #32adff; }"
         "button.suggested-action:hover { background: #2aa6f4; }"
@@ -660,6 +835,15 @@ void install_css() {
         ".dpi-scale trough { background: #2b3038; min-height: 8px; border-radius: 999px; }"
         ".dpi-scale highlight { background: #1599ed; min-height: 8px; border-radius: 999px; }"
         ".dpi-scale slider { background: #f3f7fb; border: 3px solid #1599ed; min-width: 18px; min-height: 18px; }"
+        ".lighting-tab { background: transparent; border: none; box-shadow: none; color: #8992a1; padding: 3px 0; min-height: 24px; border-radius: 0; }"
+        ".lighting-tab.selected { color: #f2f6fb; border-bottom: 2px solid #2eaeff; }"
+        ".lighting-caption { color: #8993a2; font-size: 12px; }"
+        ".lighting-value { color: #f5f7fb; font-size: 18px; font-weight: 800; }"
+        ".lighting-note { color: #7f8999; font-size: 11px; }"
+        ".lighting-dropdown, .lighting-dropdown > button { background: #20252c; color: #f2f6fb; border-color: #3a424e; min-height: 34px; }"
+        ".lighting-scale trough { background: #2b3038; min-height: 8px; border-radius: 999px; }"
+        ".lighting-scale highlight { background: #1599ed; min-height: 8px; border-radius: 999px; }"
+        ".lighting-scale slider { background: #f3f7fb; border: 3px solid #1599ed; min-width: 18px; min-height: 18px; }"
         ".mouse-picture { padding: 6px; }"
         ".hotspot { background: #20252c; border: 1px solid #3a424e; color: #eaf1f8; font-size: 11px; padding: 6px 9px; }"
         ".hotspot:hover { background: #168fdf; border-color: #49baff; }"
@@ -667,9 +851,9 @@ void install_css() {
         ".hero-title { color: #f5f7fb; font-size: 23px; font-weight: 800; }"
         ".hero-caption { color: #8993a2; font-size: 12px; }"
         ".hero-stat { color: #2caeff; font-size: 25px; font-weight: 800; }"
-        "headerbar windowcontrols button, windowcontrols button { background: transparent; border: none; box-shadow: none; border-radius: 0; color: #8e97a5; min-width: 34px; min-height: 34px; padding: 0; }"
-        "headerbar windowcontrols button:hover, windowcontrols button:hover { background: #1d2229; color: #f3f6fb; }"
-        "headerbar windowcontrols button:active, windowcontrols button:active { background: #27303a; }";
+        "headerbar button.titlebutton, headerbar windowcontrols button, windowcontrols button { background: transparent; border: none; box-shadow: none; border-radius: 0; color: #8e97a5; min-width: 30px; min-height: 30px; padding: 0; }"
+        "headerbar button.titlebutton:hover, headerbar windowcontrols button:hover, windowcontrols button:hover { background: #1d2229; color: #f3f6fb; }"
+        "headerbar button.titlebutton:active, headerbar windowcontrols button:active, windowcontrols button:active { background: #27303a; }";
     GtkCssProvider* provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -708,6 +892,8 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(heading), label("Open HID++ control for Logitech devices", "app-subtitle"));
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), heading);
     gtk_widget_set_margin_end(heading, 18);
+    GtkWidget* title_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), title_spacer);
     GtkWidget* refresh = gtk_button_new_with_label("Refresh");
     gtk_widget_add_css_class(refresh, "suggested-action");
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh);
@@ -764,20 +950,6 @@ void activate(GtkApplication* application, gpointer) {
     gtk_grid_attach(GTK_GRID(overview), card("Device", "The connected receiver and HID++ endpoint.", device_grid), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(overview), card("Onboard profile", "The profile stored inside the mouse or receiver.", profile_grid), 1, 0, 1, 1);
     gtk_box_append(GTK_BOX(overview_page), overview);
-
-    GtkWidget* lighting_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    GtkWidget* lighting_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(lighting_grid), 10);
-    gtk_grid_set_column_spacing(GTK_GRID(lighting_grid), 24);
-    state->lighting_state = info_row(GTK_GRID(lighting_grid), 0, "Live lighting");
-    state->lighting_zones = info_row(GTK_GRID(lighting_grid), 1, "Zones");
-    state->lighting_control = info_row(GTK_GRID(lighting_grid), 2, "Control");
-    gtk_box_append(GTK_BOX(lighting_box), lighting_grid);
-    state->lighting_off = GTK_BUTTON(gtk_button_new_with_label("Disable onboard lighting"));
-    gtk_widget_add_css_class(GTK_WIDGET(state->lighting_off), "destructive-action");
-    gtk_widget_set_halign(GTK_WIDGET(state->lighting_off), GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(lighting_box), GTK_WIDGET(state->lighting_off));
-    gtk_box_append(GTK_BOX(overview_page), card("Lighting", "Live capabilities are reported separately from profile effects.", lighting_box));
 
     GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
     GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
@@ -871,6 +1043,110 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(sensitivity_box), dpi_columns);
     gtk_box_append(GTK_BOX(sensitivity_page), sensitivity_box);
 
+    GtkWidget* lighting_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
+    GtkWidget* lighting_heading = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_box_append(GTK_BOX(lighting_heading), label("LIGHTSYNC", "hero-title"));
+    gtk_box_append(GTK_BOX(lighting_heading), label("Control the live lighting effect and the settings stored by the device.", "lighting-caption"));
+    gtk_box_append(GTK_BOX(lighting_page), lighting_heading);
+
+    GtkWidget* lighting_columns = gtk_grid_new();
+    gtk_grid_set_column_spacing(GTK_GRID(lighting_columns), 17);
+    gtk_grid_set_column_homogeneous(GTK_GRID(lighting_columns), TRUE);
+
+    GtkWidget* lighting_controls = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    state->lighting_controls = lighting_controls;
+    GtkWidget* windows_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(windows_row), label("WINDOWS SETTINGS", "dpi-caption"));
+    GtkWidget* windows_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(windows_spacer, TRUE);
+    gtk_box_append(GTK_BOX(windows_row), windows_spacer);
+    state->lighting_windows = GTK_SWITCH(gtk_switch_new());
+    gtk_widget_set_valign(GTK_WIDGET(state->lighting_windows), GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(windows_row), GTK_WIDGET(state->lighting_windows));
+    gtk_box_append(GTK_BOX(lighting_controls), windows_row);
+
+    GtkWidget* zone_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
+    GtkWidget* primary_zone = gtk_button_new_with_label("PRIMARY");
+    GtkWidget* logo_zone = gtk_button_new_with_label("LOGO");
+    gtk_widget_add_css_class(primary_zone, "lighting-tab");
+    gtk_widget_add_css_class(primary_zone, "selected");
+    gtk_widget_add_css_class(logo_zone, "lighting-tab");
+    gtk_widget_set_can_focus(primary_zone, FALSE);
+    gtk_widget_set_can_focus(logo_zone, FALSE);
+    gtk_box_append(GTK_BOX(zone_row), primary_zone);
+    gtk_box_append(GTK_BOX(zone_row), logo_zone);
+    gtk_box_append(GTK_BOX(lighting_controls), zone_row);
+
+    GtkWidget* effect_label = label("EFFECT", "dpi-caption");
+    gtk_box_append(GTK_BOX(lighting_controls), effect_label);
+    state->lighting_effect = GTK_DROP_DOWN(gtk_drop_down_new(nullptr, nullptr));
+    gtk_widget_add_css_class(GTK_WIDGET(state->lighting_effect), "lighting-dropdown");
+    gtk_widget_set_hexpand(GTK_WIDGET(state->lighting_effect), TRUE);
+    gtk_box_append(GTK_BOX(lighting_controls), GTK_WIDGET(state->lighting_effect));
+    update_lighting_effect_model(state, {}, 0, 0);
+    gtk_box_append(GTK_BOX(lighting_controls), label("Effects and controls are limited to capabilities shared by the lighting zones.", "lighting-note"));
+
+    GtkWidget* rate_heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(rate_heading), label("EFFECT RATE", "dpi-caption"));
+    state->lighting_rate_value = GTK_LABEL(label("8000 ms", "value"));
+    gtk_widget_set_hexpand(GTK_WIDGET(state->lighting_rate_value), TRUE);
+    gtk_label_set_xalign(state->lighting_rate_value, 1.0f);
+    gtk_box_append(GTK_BOX(rate_heading), GTK_WIDGET(state->lighting_rate_value));
+    gtk_box_append(GTK_BOX(lighting_controls), rate_heading);
+    state->lighting_rate = GTK_SCALE(gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 100, 60000, 100));
+    gtk_scale_set_draw_value(state->lighting_rate, FALSE);
+    gtk_widget_add_css_class(GTK_WIDGET(state->lighting_rate), "lighting-scale");
+    gtk_range_set_value(GTK_RANGE(state->lighting_rate), 8000);
+    gtk_box_append(GTK_BOX(lighting_controls), GTK_WIDGET(state->lighting_rate));
+
+    GtkWidget* brightness_heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(brightness_heading), label("EFFECT BRIGHTNESS", "dpi-caption"));
+    state->lighting_brightness_value = GTK_LABEL(label("100%", "value"));
+    gtk_widget_set_hexpand(GTK_WIDGET(state->lighting_brightness_value), TRUE);
+    gtk_label_set_xalign(state->lighting_brightness_value, 1.0f);
+    gtk_box_append(GTK_BOX(brightness_heading), GTK_WIDGET(state->lighting_brightness_value));
+    gtk_box_append(GTK_BOX(lighting_controls), brightness_heading);
+    state->lighting_brightness = GTK_SCALE(gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1));
+    gtk_scale_set_draw_value(state->lighting_brightness, FALSE);
+    gtk_widget_add_css_class(GTK_WIDGET(state->lighting_brightness), "lighting-scale");
+    gtk_range_set_value(GTK_RANGE(state->lighting_brightness), 100);
+    gtk_box_append(GTK_BOX(lighting_controls), GTK_WIDGET(state->lighting_brightness));
+
+    state->lighting_effect_hint = GTK_LABEL(label("No live lighting effects reported", "lighting-note"));
+    gtk_box_append(GTK_BOX(lighting_controls), GTK_WIDGET(state->lighting_effect_hint));
+    GtkWidget* lighting_actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    state->lighting_sync = GTK_BUTTON(gtk_button_new_with_label("Sync lighting zones"));
+    gtk_widget_add_css_class(GTK_WIDGET(state->lighting_sync), "suggested-action");
+    gtk_box_append(GTK_BOX(lighting_actions), GTK_WIDGET(state->lighting_sync));
+    state->lighting_off = GTK_BUTTON(gtk_button_new_with_label("Disable onboard lighting"));
+    gtk_widget_add_css_class(GTK_WIDGET(state->lighting_off), "destructive-action");
+    gtk_box_append(GTK_BOX(lighting_actions), GTK_WIDGET(state->lighting_off));
+    gtk_box_append(GTK_BOX(lighting_controls), lighting_actions);
+    gtk_grid_attach(GTK_GRID(lighting_columns), card("Lighting controls", "The same live effect is applied to every compatible zone.", lighting_controls), 0, 0, 1, 1);
+
+    GtkWidget* lighting_visual = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    GtkWidget* battery_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(battery_row), label("BATTERY LEVEL", "dpi-caption"));
+    GtkWidget* battery_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(battery_spacer, TRUE);
+    gtk_box_append(GTK_BOX(battery_row), battery_spacer);
+    state->lighting_battery = GTK_LABEL(label("Unavailable", "lighting-value"));
+    gtk_label_set_xalign(state->lighting_battery, 1.0f);
+    gtk_box_append(GTK_BOX(battery_row), GTK_WIDGET(state->lighting_battery));
+    gtk_box_append(GTK_BOX(lighting_visual), battery_row);
+    GtkWidget* lighting_picture = mouse_picture(300, 340);
+    gtk_widget_set_vexpand(lighting_picture, TRUE);
+    gtk_box_append(GTK_BOX(lighting_visual), lighting_picture);
+    GtkWidget* lighting_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(lighting_grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(lighting_grid), 20);
+    state->lighting_state = info_row(GTK_GRID(lighting_grid), 0, "Live lighting");
+    state->lighting_zones = info_row(GTK_GRID(lighting_grid), 1, "Zones");
+    state->lighting_control = info_row(GTK_GRID(lighting_grid), 2, "Control");
+    gtk_box_append(GTK_BOX(lighting_visual), card("Device lighting", "Live capabilities reported by HID++.", lighting_grid));
+    gtk_grid_attach(GTK_GRID(lighting_columns), card("Lighting preview", "Primary and logo zones are shown together.", lighting_visual), 1, 0, 1, 1);
+    gtk_box_append(GTK_BOX(lighting_page), lighting_columns);
+
     GtkWidget* mapping_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 17);
     GtkWidget* mouse_visual = gtk_overlay_new();
     gtk_overlay_set_child(GTK_OVERLAY(mouse_visual), mouse_picture(340, 430));
@@ -897,6 +1173,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_vexpand(stack, TRUE);
     gtk_stack_add_titled(GTK_STACK(stack), overview_page, "overview", "Overview");
     gtk_stack_add_titled(GTK_STACK(stack), sensitivity_page, "sensitivity", "Sensitivity");
+    gtk_stack_add_titled(GTK_STACK(stack), lighting_page, "lighting", "Lighting");
     gtk_stack_add_titled(GTK_STACK(stack), mapping_page, "mapping", "Onboard Mapping");
     GtkWidget* switcher = gtk_stack_switcher_new();
     gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), GTK_STACK(stack));
@@ -911,6 +1188,10 @@ void activate(GtkApplication* application, gpointer) {
     gtk_window_set_child(window, scroll);
     g_signal_connect(refresh, "clicked", G_CALLBACK(refresh_clicked), state);
     g_signal_connect(state->lighting_off, "clicked", G_CALLBACK(lighting_off_clicked), state);
+    g_signal_connect(state->lighting_sync, "clicked", G_CALLBACK(lighting_sync_clicked), state);
+    g_signal_connect(state->lighting_windows, "state-set", G_CALLBACK(lighting_windows_changed), state);
+    g_signal_connect(state->lighting_rate, "value-changed", G_CALLBACK(lighting_rate_changed), state);
+    g_signal_connect(state->lighting_brightness, "value-changed", G_CALLBACK(lighting_brightness_changed), state);
     g_signal_connect(state->dpi_live_apply, "clicked", G_CALLBACK(dpi_live_clicked), state);
     g_signal_connect(state->dpi_live_scale, "value-changed", G_CALLBACK(dpi_live_scale_changed), state);
     g_signal_connect(state->dpi_profile_scale, "value-changed", G_CALLBACK(dpi_profile_scale_changed), state);
