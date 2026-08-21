@@ -2,6 +2,8 @@
 
 These notes record behavior verified against the current Logitech G Pro Wireless receiver workflow. They are implementation evidence, not a promise that every Logitech device behaves the same way.
 
+The source follows the reference projects’ domain-oriented organization: transport, protocol features, profile storage, lighting, and clients are kept separate so new device families can be added without moving client code.
+
 ## HID++ transport
 
 The receiver is exposed through the Windows HID++ interface and answers HID++ 4.2 requests. The implementation uses the long HID++ report format and enumerates the Feature Set before addressing the paired device.

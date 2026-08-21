@@ -11,12 +11,31 @@ option(LOGIPRO_BUILD_GUI "Build the optional native Windows GUI" OFF)
 include(CTest)
 include(GNUInstallDirs)
 
+set(LOGIPRO_BIN_DIR "${CMAKE_SOURCE_DIR}/bin")
+set(LOGIPRO_LIB_DIR "${CMAKE_SOURCE_DIR}/lib")
+
+function(logipro_set_output_directories target)
+    set_target_properties(${target} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${LOGIPRO_BIN_DIR}"
+        LIBRARY_OUTPUT_DIRECTORY "${LOGIPRO_BIN_DIR}"
+        ARCHIVE_OUTPUT_DIRECTORY "${LOGIPRO_LIB_DIR}"
+    )
+    foreach(configuration Debug Release RelWithDebInfo MinSizeRel)
+        string(TOUPPER "${configuration}" configuration_upper)
+        set_target_properties(${target} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY_${configuration_upper} "${LOGIPRO_BIN_DIR}"
+            LIBRARY_OUTPUT_DIRECTORY_${configuration_upper} "${LOGIPRO_BIN_DIR}"
+            ARCHIVE_OUTPUT_DIRECTORY_${configuration_upper} "${LOGIPRO_LIB_DIR}"
+        )
+    endforeach()
+endfunction()
+
 add_library(logipro_core SHARED
-    src/hid_windows.cpp
-    src/hid_capture_windows.cpp
-    src/raw_input_windows.cpp
-    src/hidpp_windows.cpp
-    src/hook_windows.cpp
+    src/hid/hid.cpp
+    src/hid/capture.cpp
+    src/input/raw_input.cpp
+    src/hidpp/hidpp.cpp
+    src/input/hook.cpp
 )
 
 target_include_directories(logipro_core
@@ -28,6 +47,7 @@ target_include_directories(logipro_core
 target_compile_definitions(logipro_core PRIVATE LOGIPRO_BUILD_DLL)
 target_compile_definitions(logipro_core INTERFACE LOGIPRO_USE_DLL)
 set_target_properties(logipro_core PROPERTIES OUTPUT_NAME logipro PREFIX "")
+logipro_set_output_directories(logipro_core)
 
 if(MSVC)
     target_compile_options(logipro_core PRIVATE /W4 /permissive-)
@@ -37,10 +57,11 @@ endif()
 
 if(LOGIPRO_BUILD_CLI)
     add_executable(logipro
-        src/app.cpp
-        src/main.cpp
+        src/cli/app.cpp
+        src/cli/main.cpp
     )
     target_link_libraries(logipro PRIVATE logipro_core)
+    logipro_set_output_directories(logipro)
     install(TARGETS logipro RUNTIME DESTINATION bin)
 endif()
 
@@ -50,15 +71,24 @@ if(WIN32)
 endif()
 
 if(LOGIPRO_BUILD_GUI)
-    if(NOT WIN32)
-        message(FATAL_ERROR "LOGIPRO_BUILD_GUI requires Windows")
-    endif()
-    add_executable(logipro_gui WIN32
-        gui/main_windows.cpp
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+    add_executable(logipro_gui
+        gui/main.cpp
     )
-    target_compile_definitions(logipro_gui PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
-    target_link_libraries(logipro_gui PRIVATE logipro_core user32)
+    target_link_libraries(logipro_gui PRIVATE logipro_core PkgConfig::GTK4)
+    logipro_set_output_directories(logipro_gui)
     install(TARGETS logipro_gui RUNTIME DESTINATION bin)
+endif()
+
+if(MINGW)
+    target_link_options(logipro_core PRIVATE -static-libgcc -static-libstdc++)
+    if(LOGIPRO_BUILD_CLI)
+        target_link_options(logipro PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+    if(LOGIPRO_BUILD_GUI)
+        target_link_options(logipro_gui PRIVATE -static-libgcc -static-libstdc++)
+    endif()
 endif()
 
 if(BUILD_TESTING AND LOGIPRO_BUILD_CLI)
