@@ -43,6 +43,11 @@ struct HidppOnboardProfileInfo {
     std::vector<HidppOnboardButtonInfo> buttons;
     bool active_lighting_readable = false;
     std::vector<std::array<std::uint8_t, 11>> active_lighting;
+    bool dpi_profile_readable = false;
+    std::uint8_t dpi_profile_count = 0;
+    std::uint8_t dpi_default_index = 0;
+    std::uint8_t dpi_shift_index = 0;
+    std::array<std::uint16_t, 5> dpi_profile_values{};
 };
 
 struct HidppLightingZoneInfo {
@@ -88,6 +93,22 @@ struct HidppBatteryInfo {
     std::uint8_t flags = 0;
 };
 
+struct HidppDpiSensorInfo {
+    std::uint8_t index = 0;
+    std::uint16_t current_dpi = 0;
+    std::uint16_t min_dpi = 0;
+    std::uint16_t max_dpi = 0;
+    std::uint16_t step = 0;
+    std::uint16_t default_dpi = 0;
+    std::vector<std::uint16_t> values;
+};
+
+struct HidppDpiInfo {
+    bool readable = false;
+    std::uint8_t feature_index = 0;
+    std::vector<HidppDpiSensorInfo> sensors;
+};
+
 struct HidppDeviceInfo {
     std::wstring path;
     std::wstring product;
@@ -99,10 +120,14 @@ struct HidppDeviceInfo {
     HidppOnboardProfileInfo onboard_profiles;
     HidppLightingInfo lighting;
     HidppBatteryInfo battery;
+    HidppDpiInfo dpi;
 };
 
 std::vector<HidppDeviceInfo> probe_logitech_hidpp(const std::vector<HidDeviceInfo>& interfaces);
 int bind_onboard_button(std::uint8_t button, const std::array<std::uint8_t, 4>& spec);
+int set_dpi(std::uint8_t sensor, std::uint16_t dpi);
+int set_onboard_dpi(std::uint8_t slot, std::uint16_t dpi);
+int set_onboard_default_dpi(std::uint8_t slot);
 int restore_onboard_profile();
 int disable_onboard_lighting();
 

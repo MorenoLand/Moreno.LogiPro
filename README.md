@@ -11,6 +11,7 @@ This is an early, hardware-backed project.
 - The GUI and CLI both call the DLL; neither contains duplicate HID++ transport logic.
 - HID++ discovery, onboard-profile reads, CRC-checked button writes, backup/restore, and onboard lighting disable are implemented for the current target.
 - Battery telemetry is exposed through the C ABI and GUI; this mouse reports voltage, so its displayed percentage is an estimate.
+- The GTK interface separates Overview, Sensitivity, and Onboard Mapping tabs; sensitivity supports live DPI changes and five persistent onboard DPI levels when the device exposes them.
 - Support for other Logitech models is not implied by the current target.
 
 ## Build
@@ -45,7 +46,7 @@ Host-side bindings are temporary while the process runs. `--capture-hid` and `--
 
 ## GUI
 
-The GTK4 interface presents structured device, battery, onboard-profile, lighting, and button-map views with asynchronous refresh and onboard-lighting controls. It links against `logipro.dll` on Windows or the platform library on other systems; it does not display raw probe text or duplicate HID++ logic.
+The GTK4 interface presents structured device, battery, onboard-profile, lighting, sensitivity, and button-map views with asynchronous refresh and controls. It links against `logipro.dll` on Windows or the platform library on other systems; it does not display raw probe text or duplicate HID++ logic.
 
 ```powershell
 .\bin\logipro.exe

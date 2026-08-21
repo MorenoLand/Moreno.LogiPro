@@ -26,6 +26,9 @@ struct UiState {
     GtkLabel* protocol = nullptr;
     GtkLabel* features = nullptr;
     GtkLabel* battery = nullptr;
+    GtkLabel* dpi_current = nullptr;
+    GtkLabel* dpi_range = nullptr;
+    GtkLabel* dpi_profile_state = nullptr;
     GtkLabel* profile_state = nullptr;
     GtkLabel* profile_detail = nullptr;
     GtkLabel* profile_crc = nullptr;
@@ -37,13 +40,30 @@ struct UiState {
     GtkWindow* window = nullptr;
     GtkButton* refresh = nullptr;
     GtkButton* lighting_off = nullptr;
+    GtkWidget* sensitivity_box = nullptr;
+    GtkSpinButton* dpi_live = nullptr;
+    GtkButton* dpi_live_apply = nullptr;
+    std::array<GtkSpinButton*, 5> dpi_slots{};
+    std::array<GtkButton*, 5> dpi_apply{};
+    std::array<GtkButton*, 5> dpi_default{};
+    std::uint8_t dpi_sensor_index = 0;
     bool busy = false;
     bool lighting_available = false;
+    bool dpi_available = false;
 };
 
 struct SnapshotResult {
     int status = LOGIPRO_INTERNAL_ERROR;
     logipro_snapshot_t* snapshot = nullptr;
+};
+
+enum class DpiOperationKind { Live, Profile, Default };
+
+struct DpiOperation {
+    DpiOperationKind kind;
+    std::uint8_t sensor = 0;
+    std::uint8_t slot = 0;
+    std::uint16_t dpi = 0;
 };
 
 bool has_flag(int argc, char* const argv[], std::string_view flag) {
@@ -82,6 +102,7 @@ void set_busy(UiState* state, bool busy) {
     state->busy = busy;
     gtk_widget_set_sensitive(GTK_WIDGET(state->refresh), !busy);
     gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), !busy && state->lighting_available);
+    gtk_widget_set_sensitive(state->sensitivity_box, !busy && state->dpi_available);
 }
 
 GtkWidget* card(const char* title, const char* caption, GtkWidget* content) {
@@ -168,6 +189,11 @@ void reset_ui(UiState* state) {
     set_text(state->protocol, "—");
     set_text(state->features, "—");
     set_text(state->battery, "Unavailable");
+    set_text(state->dpi_current, "Unavailable");
+    set_text(state->dpi_range, "—");
+    set_text(state->dpi_profile_state, "Unavailable");
+    for (GtkSpinButton* spin : state->dpi_slots) if (spin != nullptr) gtk_spin_button_set_value(spin, 0);
+    if (state->dpi_live != nullptr) gtk_spin_button_set_value(state->dpi_live, 0);
     set_text(state->profile_state, "Unavailable");
     set_text(state->profile_detail, "Connect the receiver to read its onboard profile.");
     set_indicator(state->profile_crc, "Not checked", false);
@@ -176,6 +202,7 @@ void reset_ui(UiState* state) {
     set_text(state->lighting_zones, "—");
     set_text(state->lighting_control, "—");
     state->lighting_available = false;
+    state->dpi_available = false;
     gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), FALSE);
     clear_buttons(state);
     GtkWidget* empty = label("No onboard button map is available.", "muted");
@@ -200,6 +227,43 @@ std::string battery_text(const logipro_device_info_t& device) {
     return result.empty() ? "Available" : result;
 }
 
+void update_dpi_view(UiState* state, const logipro_snapshot_t* snapshot, const logipro_device_info_t& device) {
+    logipro_dpi_sensor_info_t sensor{};
+    if (!device.dpi_readable || device.dpi_sensor_count == 0 || logipro_snapshot_get_dpi_sensor(snapshot, 0, 0, &sensor) != LOGIPRO_OK) {
+        state->dpi_available = false;
+        set_text(state->dpi_current, "Unavailable");
+        set_text(state->dpi_range, "This device does not expose adjustable DPI.");
+        set_text(state->dpi_profile_state, device.dpi_profile_readable ? "Profile values available" : "Unavailable");
+        return;
+    }
+    state->dpi_available = true;
+    state->dpi_sensor_index = sensor.index;
+    set_text(state->dpi_current, std::to_string(sensor.current_dpi) + " DPI");
+    if (sensor.min_dpi != 0 && sensor.max_dpi != 0) {
+        set_text(state->dpi_range, std::to_string(sensor.min_dpi) + "–" + std::to_string(sensor.max_dpi) + " DPI" + (sensor.step == 0 ? "" : " • " + std::to_string(sensor.step) + " DPI steps"));
+    } else {
+        set_text(state->dpi_range, "Device range unavailable");
+    }
+    const double minimum = sensor.min_dpi == 0 ? 50 : sensor.min_dpi;
+    const double maximum = sensor.max_dpi == 0 ? 25600 : sensor.max_dpi;
+    const double increment = sensor.step == 0 ? 50 : sensor.step;
+    gtk_spin_button_set_range(state->dpi_live, minimum, maximum);
+    gtk_spin_button_set_increments(state->dpi_live, increment, increment * 10);
+    gtk_spin_button_set_value(state->dpi_live, sensor.current_dpi);
+    if (device.dpi_profile_readable) {
+        set_text(state->dpi_profile_state, std::to_string(device.dpi_profile_count) + " pinned levels • default level " + std::to_string(device.dpi_default_index + 1));
+        for (std::size_t slot = 0; slot < state->dpi_slots.size(); ++slot) {
+            gtk_spin_button_set_range(state->dpi_slots[slot], minimum, maximum);
+            gtk_spin_button_set_increments(state->dpi_slots[slot], increment, increment * 10);
+            gtk_spin_button_set_value(state->dpi_slots[slot], device.dpi_profile_values[slot]);
+            gtk_widget_set_sensitive(GTK_WIDGET(state->dpi_default[slot]), device.dpi_profile_count > slot);
+        }
+    } else {
+        set_text(state->dpi_profile_state, "No persistent DPI slots available");
+        for (GtkButton* button : state->dpi_default) gtk_widget_set_sensitive(GTK_WIDGET(button), FALSE);
+    }
+}
+
 void apply_snapshot(UiState* state, const SnapshotResult& result) {
     const int status = result.status;
     if (status != LOGIPRO_OK || result.snapshot == nullptr || logipro_snapshot_device_count(result.snapshot) == 0) {
@@ -220,6 +284,7 @@ void apply_snapshot(UiState* state, const SnapshotResult& result) {
     set_text(state->protocol, "HID++ " + std::to_string(device.protocol_major) + "." + std::to_string(device.protocol_minor));
     set_text(state->features, std::to_string(device.feature_count) + " discovered");
     set_text(state->battery, battery_text(device));
+    update_dpi_view(state, result.snapshot, device);
     if (device.onboard_profiles_readable) {
         set_indicator(state->profile_state, "Ready", true);
         set_text(state->profile_detail, "Format " + std::to_string(device.profile_format) + " • " + std::to_string(device.button_count) + " buttons • sector " + hex_value(device.active_sector, 4));
@@ -318,6 +383,58 @@ void lighting_off_clicked(GtkButton*, gpointer data) {
     g_object_unref(task);
 }
 
+void destroy_dpi_operation(gpointer data) {
+    delete static_cast<DpiOperation*>(data);
+}
+
+void dpi_operation_complete(GObject* source, GAsyncResult* async_result, gpointer) {
+    auto* state = static_cast<UiState*>(g_object_get_data(source, "logipro-state"));
+    if (state == nullptr) return;
+    const int result = g_task_propagate_int(G_TASK(async_result), nullptr);
+    if (result != LOGIPRO_OK) {
+        set_busy(state, false);
+        set_status(state, "DPI update failed", "status-error");
+        return;
+    }
+    start_snapshot_read(state);
+}
+
+void start_dpi_operation(UiState* state, const DpiOperation& operation, const char* status) {
+    if (state->busy) return;
+    set_busy(state, true);
+    set_status(state, status, "status-neutral");
+    GTask* task = g_task_new(G_OBJECT(state->window), nullptr, dpi_operation_complete, nullptr);
+    g_task_set_task_data(task, new DpiOperation(operation), destroy_dpi_operation);
+    g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer task_data, GCancellable*) {
+        const auto& operation = *static_cast<DpiOperation*>(task_data);
+        int result = LOGIPRO_INTERNAL_ERROR;
+        if (operation.kind == DpiOperationKind::Live) result = logipro_dpi_set(operation.sensor, operation.dpi);
+        if (operation.kind == DpiOperationKind::Profile) result = logipro_profile_dpi_set(operation.slot, operation.dpi);
+        if (operation.kind == DpiOperationKind::Default) result = logipro_profile_dpi_set_default(operation.slot);
+        g_task_return_int(task, result);
+    });
+    g_object_unref(task);
+}
+
+void dpi_live_clicked(GtkButton*, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    const auto dpi = static_cast<std::uint16_t>(gtk_spin_button_get_value_as_int(state->dpi_live));
+    start_dpi_operation(state, {DpiOperationKind::Live, state->dpi_sensor_index, 0, dpi}, "Applying live DPI");
+}
+
+void dpi_profile_apply_clicked(GtkButton* button, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    const auto slot = static_cast<std::uint8_t>(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "dpi-slot")));
+    const auto dpi = static_cast<std::uint16_t>(gtk_spin_button_get_value_as_int(state->dpi_slots[slot]));
+    start_dpi_operation(state, {DpiOperationKind::Profile, 0, slot, dpi}, "Saving DPI profile");
+}
+
+void dpi_profile_default_clicked(GtkButton* button, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    const auto slot = static_cast<std::uint8_t>(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "dpi-slot")));
+    start_dpi_operation(state, {DpiOperationKind::Default, 0, slot, 0}, "Setting default DPI");
+}
+
 void install_css() {
     static constexpr const char css[] =
         "window { background: #f4f6fa; color: #1d2635; }"
@@ -399,7 +516,8 @@ void activate(GtkApplication* application, gpointer) {
     gtk_grid_set_column_homogeneous(GTK_GRID(overview), TRUE);
     gtk_grid_attach(GTK_GRID(overview), card("Device", "The connected receiver and HID++ endpoint.", device_grid), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(overview), card("Onboard profile", "The profile stored inside the mouse or receiver.", profile_grid), 1, 0, 1, 1);
-    gtk_box_append(GTK_BOX(page), overview);
+    GtkWidget* overview_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    gtk_box_append(GTK_BOX(overview_page), overview);
 
     GtkWidget* lighting_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget* lighting_grid = gtk_grid_new();
@@ -413,13 +531,71 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_add_css_class(GTK_WIDGET(state->lighting_off), "destructive-action");
     gtk_widget_set_halign(GTK_WIDGET(state->lighting_off), GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(lighting_box), GTK_WIDGET(state->lighting_off));
-    gtk_box_append(GTK_BOX(page), card("Lighting", "Live capabilities are reported separately from profile effects.", lighting_box));
+    gtk_box_append(GTK_BOX(overview_page), card("Lighting", "Live capabilities are reported separately from profile effects.", lighting_box));
+
+    GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    state->sensitivity_box = sensitivity_box;
+    GtkWidget* dpi_info_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(dpi_info_grid), 10);
+    gtk_grid_set_column_spacing(GTK_GRID(dpi_info_grid), 24);
+    state->dpi_current = info_row(GTK_GRID(dpi_info_grid), 0, "Current DPI");
+    state->dpi_range = info_row(GTK_GRID(dpi_info_grid), 1, "Sensor range");
+    state->dpi_profile_state = info_row(GTK_GRID(dpi_info_grid), 2, "Onboard levels");
+    gtk_box_append(GTK_BOX(sensitivity_box), card("Sensitivity", "Live sensor control and the values stored in the active onboard profile.", dpi_info_grid));
+    GtkWidget* live_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_widget_set_hexpand(live_box, TRUE);
+    gtk_box_append(GTK_BOX(live_box), label("Set live DPI", "muted"));
+    state->dpi_live = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(50, 25600, 50));
+    gtk_widget_set_hexpand(GTK_WIDGET(state->dpi_live), TRUE);
+    gtk_box_append(GTK_BOX(live_box), GTK_WIDGET(state->dpi_live));
+    state->dpi_live_apply = GTK_BUTTON(gtk_button_new_with_label("Apply now"));
+    gtk_widget_add_css_class(GTK_WIDGET(state->dpi_live_apply), "suggested-action");
+    gtk_box_append(GTK_BOX(live_box), GTK_WIDGET(state->dpi_live_apply));
+    gtk_box_append(GTK_BOX(sensitivity_box), live_box);
+    GtkWidget* dpi_profile_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(dpi_profile_grid), 10);
+    gtk_grid_set_column_spacing(GTK_GRID(dpi_profile_grid), 10);
+    gtk_grid_attach(GTK_GRID(dpi_profile_grid), label("Level", "muted"), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(dpi_profile_grid), label("DPI", "muted"), 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(dpi_profile_grid), label("Actions", "muted"), 2, 0, 2, 1);
+    for (std::size_t slot = 0; slot < state->dpi_slots.size(); ++slot) {
+        const int row = static_cast<int>(slot + 1);
+        gtk_grid_attach(GTK_GRID(dpi_profile_grid), label(("Level " + std::to_string(slot + 1)).c_str(), "value"), 0, row, 1, 1);
+        state->dpi_slots[slot] = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(50, 25600, 50));
+        gtk_widget_set_hexpand(GTK_WIDGET(state->dpi_slots[slot]), TRUE);
+        gtk_grid_attach(GTK_GRID(dpi_profile_grid), GTK_WIDGET(state->dpi_slots[slot]), 1, row, 1, 1);
+        state->dpi_apply[slot] = GTK_BUTTON(gtk_button_new_with_label("Save"));
+        state->dpi_default[slot] = GTK_BUTTON(gtk_button_new_with_label("Make default"));
+        g_object_set_data(G_OBJECT(state->dpi_apply[slot]), "dpi-slot", GINT_TO_POINTER(static_cast<int>(slot)));
+        g_object_set_data(G_OBJECT(state->dpi_default[slot]), "dpi-slot", GINT_TO_POINTER(static_cast<int>(slot)));
+        g_signal_connect(state->dpi_apply[slot], "clicked", G_CALLBACK(dpi_profile_apply_clicked), state);
+        g_signal_connect(state->dpi_default[slot], "clicked", G_CALLBACK(dpi_profile_default_clicked), state);
+        gtk_grid_attach(GTK_GRID(dpi_profile_grid), GTK_WIDGET(state->dpi_apply[slot]), 2, row, 1, 1);
+        gtk_grid_attach(GTK_GRID(dpi_profile_grid), GTK_WIDGET(state->dpi_default[slot]), 3, row, 1, 1);
+    }
+    gtk_box_append(GTK_BOX(sensitivity_box), card("Pinned sensitivity levels", "The mouse DPI button cycles these five persistent values.", dpi_profile_grid));
+    gtk_box_append(GTK_BOX(sensitivity_page), sensitivity_box);
+
+    GtkWidget* mapping_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
 
     GtkWidget* buttons_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(buttons_grid), 10);
     gtk_grid_set_column_spacing(GTK_GRID(buttons_grid), 10);
     state->buttons_grid = GTK_GRID(buttons_grid);
-    gtk_box_append(GTK_BOX(page), card("Onboard button map", "Assignments currently stored in the active profile.", buttons_grid));
+    gtk_box_append(GTK_BOX(mapping_page), card("Onboard button map", "Assignments currently stored in the active profile.", buttons_grid));
+
+    GtkWidget* stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_widget_set_vexpand(stack, TRUE);
+    gtk_stack_add_titled(GTK_STACK(stack), overview_page, "overview", "Overview");
+    gtk_stack_add_titled(GTK_STACK(stack), sensitivity_page, "sensitivity", "Sensitivity");
+    gtk_stack_add_titled(GTK_STACK(stack), mapping_page, "mapping", "Onboard Mapping");
+    GtkWidget* switcher = gtk_stack_switcher_new();
+    gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), GTK_STACK(stack));
+    gtk_widget_add_css_class(switcher, "tab-switcher");
+    gtk_box_append(GTK_BOX(page), switcher);
+    gtk_box_append(GTK_BOX(page), stack);
 
     GtkWidget* scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -428,6 +604,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_window_set_child(window, scroll);
     g_signal_connect(refresh, "clicked", G_CALLBACK(refresh_clicked), state);
     g_signal_connect(state->lighting_off, "clicked", G_CALLBACK(lighting_off_clicked), state);
+    g_signal_connect(state->dpi_live_apply, "clicked", G_CALLBACK(dpi_live_clicked), state);
     start_snapshot_read(state);
     gtk_window_present(window);
 }

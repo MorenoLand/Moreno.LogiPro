@@ -172,6 +172,7 @@ int logipro_snapshot_get_device(const logipro_snapshot_t* snapshot, size_t index
     const auto& onboard = device.onboard_profiles;
     const auto& lighting = device.lighting;
     const auto& battery = device.battery;
+    const auto& dpi = device.dpi;
     *out_info = {};
     out_info->path = snapshot->device_paths[index].c_str();
     out_info->product = snapshot->device_products[index].c_str();
@@ -193,6 +194,14 @@ int logipro_snapshot_get_device(const logipro_snapshot_t* snapshot, size_t index
     out_info->button_offset = onboard.button_offset;
     out_info->active_lighting_readable = onboard.active_lighting_readable ? 1 : 0;
     out_info->active_lighting_count = onboard.active_lighting.size();
+    out_info->dpi_profile_readable = onboard.dpi_profile_readable ? 1 : 0;
+    out_info->dpi_profile_count = onboard.dpi_profile_count;
+    out_info->dpi_default_index = onboard.dpi_default_index;
+    out_info->dpi_shift_index = onboard.dpi_shift_index;
+    for (std::size_t dpi_index = 0; dpi_index < onboard.dpi_profile_values.size(); ++dpi_index) out_info->dpi_profile_values[dpi_index] = onboard.dpi_profile_values[dpi_index];
+    out_info->dpi_readable = dpi.readable ? 1 : 0;
+    out_info->dpi_feature_index = dpi.feature_index;
+    out_info->dpi_sensor_count = dpi.sensors.size();
     out_info->lighting_readable = lighting.readable ? 1 : 0;
     out_info->lighting_feature_index = lighting.feature_index;
     out_info->lighting_declared_zone_count = lighting.zone_count;
@@ -223,7 +232,7 @@ int logipro_snapshot_get_feature(const logipro_snapshot_t* snapshot, size_t devi
     const auto& features = snapshot->devices[device_index].features;
     if (feature_index >= features.size()) return fail(LOGIPRO_NOT_FOUND, "Feature index is out of range.");
     const auto& feature = features[feature_index];
-    *out_info = {feature.id, feature.index, feature.present ? 1 : 0, feature.version, feature.type};
+    *out_info = {feature.id, feature.index, static_cast<uint8_t>(feature.present ? 1 : 0), feature.version, feature.type};
     return LOGIPRO_OK;
 }
 
@@ -234,6 +243,29 @@ int logipro_snapshot_get_button(const logipro_snapshot_t* snapshot, size_t devic
     const auto& buttons = snapshot->devices[device_index].onboard_profiles.buttons;
     if (button == 0 || button > buttons.size()) return fail(LOGIPRO_NOT_FOUND, "Button index is out of range.");
     std::memcpy(out_spec, buttons[button - 1].spec.data(), 4);
+    return LOGIPRO_OK;
+}
+
+int logipro_snapshot_get_dpi_sensor(const logipro_snapshot_t* snapshot, size_t device_index, size_t sensor_index, logipro_dpi_sensor_info_t* out_info) {
+    clear_error();
+    if (validate_snapshot(snapshot) != LOGIPRO_OK || out_info == nullptr) return out_info == nullptr ? fail(LOGIPRO_INVALID_ARGUMENT, "Output DPI sensor info is null.") : LOGIPRO_INVALID_ARGUMENT;
+    if (device_index >= snapshot->devices.size()) return fail(LOGIPRO_NOT_FOUND, "HID++ device index is out of range.");
+    const auto& sensors = snapshot->devices[device_index].dpi.sensors;
+    if (sensor_index >= sensors.size()) return fail(LOGIPRO_NOT_FOUND, "DPI sensor index is out of range.");
+    const auto& sensor = sensors[sensor_index];
+    *out_info = {sensor.index, sensor.current_dpi, sensor.min_dpi, sensor.max_dpi, sensor.step, sensor.default_dpi, sensor.values.size()};
+    return LOGIPRO_OK;
+}
+
+int logipro_snapshot_get_dpi_value(const logipro_snapshot_t* snapshot, size_t device_index, size_t sensor_index, size_t value_index, uint16_t* out_dpi) {
+    clear_error();
+    if (validate_snapshot(snapshot) != LOGIPRO_OK || out_dpi == nullptr) return out_dpi == nullptr ? fail(LOGIPRO_INVALID_ARGUMENT, "Output DPI value is null.") : LOGIPRO_INVALID_ARGUMENT;
+    if (device_index >= snapshot->devices.size()) return fail(LOGIPRO_NOT_FOUND, "HID++ device index is out of range.");
+    const auto& sensors = snapshot->devices[device_index].dpi.sensors;
+    if (sensor_index >= sensors.size()) return fail(LOGIPRO_NOT_FOUND, "DPI sensor index is out of range.");
+    const auto& values = sensors[sensor_index].values;
+    if (value_index >= values.size()) return fail(LOGIPRO_NOT_FOUND, "DPI value index is out of range.");
+    *out_dpi = values[value_index];
     return LOGIPRO_OK;
 }
 
@@ -279,6 +311,42 @@ int logipro_profile_bind(uint8_t button, const uint8_t spec[4]) {
         return fail(LOGIPRO_INTERNAL_ERROR, error.what());
     } catch (...) {
         return fail(LOGIPRO_INTERNAL_ERROR, "Unknown profile-bind error.");
+    }
+}
+
+int logipro_dpi_set(uint8_t sensor, uint16_t dpi) {
+    clear_error();
+    if (dpi == 0) return fail(LOGIPRO_INVALID_ARGUMENT, "DPI must be greater than zero.");
+    try {
+        return operation_result(logipro::set_dpi(sensor, dpi));
+    } catch (const std::exception& error) {
+        return fail(LOGIPRO_INTERNAL_ERROR, error.what());
+    } catch (...) {
+        return fail(LOGIPRO_INTERNAL_ERROR, "Unknown DPI operation error.");
+    }
+}
+
+int logipro_profile_dpi_set(uint8_t slot, uint16_t dpi) {
+    clear_error();
+    if (slot >= 5 || dpi == 0) return fail(LOGIPRO_INVALID_ARGUMENT, "DPI slot must be 0-4 and DPI must be greater than zero.");
+    try {
+        return operation_result(logipro::set_onboard_dpi(slot, dpi));
+    } catch (const std::exception& error) {
+        return fail(LOGIPRO_INTERNAL_ERROR, error.what());
+    } catch (...) {
+        return fail(LOGIPRO_INTERNAL_ERROR, "Unknown onboard DPI operation error.");
+    }
+}
+
+int logipro_profile_dpi_set_default(uint8_t slot) {
+    clear_error();
+    if (slot >= 5) return fail(LOGIPRO_INVALID_ARGUMENT, "DPI slot must be 0-4.");
+    try {
+        return operation_result(logipro::set_onboard_default_dpi(slot));
+    } catch (const std::exception& error) {
+        return fail(LOGIPRO_INTERNAL_ERROR, error.what());
+    } catch (...) {
+        return fail(LOGIPRO_INTERNAL_ERROR, "Unknown default DPI operation error.");
     }
 }
 

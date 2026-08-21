@@ -362,6 +362,55 @@ std::optional<logipro::HidppBatteryInfo> read_battery_state(HANDLE handle, const
     return result;
 }
 
+std::optional<logipro::HidppDpiInfo> read_dpi_state(HANDLE handle, const logipro::HidDeviceInfo& device, std::uint8_t device_index, std::uint8_t feature_index) {
+    const auto count = call(handle, device, device_index, feature_index, 0x00, {0x00, 0x00, 0x00});
+    if (!count || count->empty() || count->front() == 0 || count->front() > 8) return std::nullopt;
+    logipro::HidppDpiInfo result;
+    result.readable = true;
+    result.feature_index = feature_index;
+    for (std::uint8_t sensor_index = 0; sensor_index < count->front(); ++sensor_index) {
+        const auto list = call(handle, device, device_index, feature_index, 0x10, {sensor_index, 0x00, 0x00});
+        const auto current = call(handle, device, device_index, feature_index, 0x20, {sensor_index, 0x00, 0x00});
+        if (!list || list->size() < 3 || !current || current->size() < 5) continue;
+        logipro::HidppDpiSensorInfo sensor;
+        sensor.index = list->at(0);
+        for (std::size_t offset = 1; offset + 1 < list->size(); offset += 2) {
+            const std::uint16_t value = static_cast<std::uint16_t>(list->at(offset) << 8 | list->at(offset + 1));
+            if (value == 0) break;
+            if (value > 0xe000) {
+                sensor.step = static_cast<std::uint16_t>(value - 0xe000);
+            } else {
+                sensor.values.push_back(value);
+            }
+        }
+        sensor.current_dpi = static_cast<std::uint16_t>(current->at(1) << 8 | current->at(2));
+        sensor.default_dpi = static_cast<std::uint16_t>(current->at(3) << 8 | current->at(4));
+        if (!sensor.values.empty()) {
+            sensor.min_dpi = *std::min_element(sensor.values.begin(), sensor.values.end());
+            sensor.max_dpi = *std::max_element(sensor.values.begin(), sensor.values.end());
+        }
+        result.sensors.push_back(std::move(sensor));
+    }
+    return result.sensors.empty() ? std::nullopt : std::optional<logipro::HidppDpiInfo>(std::move(result));
+}
+
+bool set_dpi_state(HANDLE handle, const logipro::HidDeviceInfo& device, std::uint8_t device_index, std::uint8_t feature_index, std::uint8_t sensor, std::uint16_t dpi) {
+    const auto response = call(handle, device, device_index, feature_index, 0x30, {sensor, static_cast<std::uint8_t>(dpi >> 8), static_cast<std::uint8_t>(dpi)});
+    if (!response) return false;
+    if (response->size() >= 3) {
+        const std::uint16_t echoed = static_cast<std::uint16_t>(response->at(1) << 8 | response->at(2));
+        if (echoed != 0 && echoed != dpi) return false;
+    }
+    return true;
+}
+
+bool dpi_supported(const logipro::HidppDpiSensorInfo& sensor, std::uint16_t dpi) {
+    if ((sensor.min_dpi != 0 && dpi < sensor.min_dpi) || (sensor.max_dpi != 0 && dpi > sensor.max_dpi)) return false;
+    if (sensor.step != 0 && sensor.min_dpi != 0 && (dpi - sensor.min_dpi) % sensor.step != 0) return false;
+    if (sensor.step == 0 && !sensor.values.empty() && std::find(sensor.values.begin(), sensor.values.end(), dpi) == sensor.values.end()) return false;
+    return true;
+}
+
 void set_sector_crc(std::vector<std::uint8_t>& sector) {
     const auto crc = crc16_ccitt_false(sector, sector.size() - 2);
     sector[sector.size() - 2] = static_cast<std::uint8_t>(crc >> 8);
@@ -430,15 +479,14 @@ std::string backup_path(std::uint16_t sector) {
     return "logipro-backup-sector-" + std::to_string(sector) + ".bin";
 }
 
-bool save_backup(const std::string& path, const std::vector<std::uint8_t>& data, std::uint8_t button_offset, std::uint8_t button_count) {
+bool save_backup(const std::string& path, const std::vector<std::uint8_t>& data, const std::vector<std::pair<std::size_t, std::size_t>>& mutable_ranges) {
     std::ifstream existing(path, std::ios::binary);
     if (existing.good()) {
         const std::vector<std::uint8_t> old((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
         if (old.size() != data.size() || !valid_sector_crc(old)) return false;
-        const std::size_t buttons_begin = button_offset;
-        const std::size_t buttons_end = buttons_begin + static_cast<std::size_t>(button_count) * 4;
         for (std::size_t index = 0; index < data.size(); ++index) {
-            if ((index < buttons_begin || index >= buttons_end) && old[index] != data[index]) return false;
+            const bool mutable_byte = std::any_of(mutable_ranges.begin(), mutable_ranges.end(), [index](const auto& range) { return index >= range.first && index < range.second; });
+            if (!mutable_byte && old[index] != data[index]) return false;
         }
         return true;
     }
@@ -446,6 +494,11 @@ bool save_backup(const std::string& path, const std::vector<std::uint8_t>& data,
     if (!output) return false;
     output.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     return output.good();
+}
+
+bool save_backup(const std::string& path, const std::vector<std::uint8_t>& data, std::uint8_t button_offset, std::uint8_t button_count) {
+    const std::size_t button_end = button_offset + static_cast<std::size_t>(button_count) * 4;
+    return save_backup(path, data, {{button_offset, button_end}});
 }
 
 void print_spec(const std::array<std::uint8_t, 4>& spec) {
@@ -497,6 +550,16 @@ std::optional<logipro::HidppOnboardProfileInfo> read_onboard_profiles(HANDLE han
     if (!profile) return result;
     result.active_profile_readable = true;
     result.active_profile_crc_valid = valid_sector_crc(*profile);
+    if (result.profile_format <= 5 && profile->size() >= 13) {
+        result.dpi_profile_readable = true;
+        result.dpi_profile_count = 5;
+        result.dpi_default_index = profile->at(1);
+        result.dpi_shift_index = profile->at(2);
+        for (std::size_t index = 0; index < result.dpi_profile_values.size(); ++index) {
+            const std::size_t offset = 3 + index * 2;
+            result.dpi_profile_values[index] = static_cast<std::uint16_t>(profile->at(offset) | profile->at(offset + 1) << 8);
+        }
+    }
     result.button_offset = result.profile_format >= 6 ? 48 : 32;
     if (result.profile_format == 3 && profile->size() >= 252) {
         result.active_lighting_readable = true;
@@ -566,6 +629,12 @@ std::optional<logipro::HidppDeviceInfo> probe_interface(const logipro::HidDevice
     if (const auto battery = read_battery_state(connection->get(), interface, device_index, result.features)) {
         result.battery = *battery;
     }
+    const auto dpi_feature = std::find_if(result.features.begin(), result.features.end(), [](const auto& feature) { return feature.id == 0x2201 && feature.present; });
+    if (dpi_feature != result.features.end()) {
+        if (const auto dpi = read_dpi_state(connection->get(), interface, device_index, dpi_feature->index)) {
+            result.dpi = *dpi;
+        }
+    }
     return result;
 }
 
@@ -624,6 +693,96 @@ int bind_onboard_button_impl(std::uint8_t button, const std::array<std::uint8_t,
         }
     }
     std::cerr << "No writable Logitech onboard-profile device found.\n";
+    return 1;
+}
+
+int set_dpi_impl(std::uint8_t sensor, std::uint16_t dpi) {
+    const auto interfaces = logipro::enumerate_logitech_hid();
+    for (const auto& interface : interfaces) {
+        if (interface.product_id != receiver_product_id && interface.product_id != 0xc088 && interface.product_id != 0x4079) continue;
+        const std::uint8_t first_index = interface.product_id == receiver_product_id ? 1 : direct_device_index;
+        const std::uint8_t last_index = interface.product_id == receiver_product_id ? 6 : direct_device_index;
+        for (std::uint8_t device_index = first_index; device_index <= last_index; ++device_index) {
+            const auto device = probe_interface(interface, device_index);
+            if (!device || !device->dpi.readable || sensor >= device->dpi.sensors.size()) continue;
+            const auto feature = std::find_if(device->features.begin(), device->features.end(), [](const auto& item) { return item.id == 0x2201 && item.present; });
+            if (feature == device->features.end()) continue;
+            const auto sensor_it = std::find_if(device->dpi.sensors.begin(), device->dpi.sensors.end(), [sensor](const auto& item) { return item.index == sensor; });
+            if (sensor_it == device->dpi.sensors.end()) continue;
+            const auto& sensor_info = *sensor_it;
+            if (!dpi_supported(sensor_info, dpi)) continue;
+            const auto connection = open_connection(interface.path);
+            if (!connection || !set_dpi_state(connection->get(), interface, device_index, feature->index, sensor_info.index, dpi)) continue;
+            const auto check = call(connection->get(), interface, device_index, feature->index, 0x20, {sensor_info.index, 0x00, 0x00});
+            if (!check || check->size() < 3 || static_cast<std::uint16_t>(check->at(1) << 8 | check->at(2)) != dpi) continue;
+            std::cout << "Sensor " << static_cast<unsigned>(sensor) << " DPI set to " << dpi << ".\n";
+            return 0;
+        }
+    }
+    std::cerr << "Unable to set live DPI.\n";
+    return 1;
+}
+
+int set_onboard_dpi_impl(std::uint8_t slot, std::uint16_t dpi, bool set_default) {
+    if (slot >= 5) return 2;
+    const auto interfaces = logipro::enumerate_logitech_hid();
+    for (const auto& interface : interfaces) {
+        if (interface.product_id != receiver_product_id && interface.product_id != 0xc088 && interface.product_id != 0x4079) continue;
+        const std::uint8_t first_index = interface.product_id == receiver_product_id ? 1 : direct_device_index;
+        const std::uint8_t last_index = interface.product_id == receiver_product_id ? 6 : direct_device_index;
+        for (std::uint8_t device_index = first_index; device_index <= last_index; ++device_index) {
+            const auto device = probe_interface(interface, device_index);
+            if (!device || !device->onboard_profiles.dpi_profile_readable || !device->onboard_profiles.active_profile_readable || !device->onboard_profiles.active_profile_crc_valid) continue;
+            if (!set_default && slot >= device->onboard_profiles.dpi_profile_count) continue;
+            const auto connection = open_connection(interface.path);
+            if (!connection) continue;
+            auto profile = read_sector(connection->get(), interface, device_index, device->onboard_profiles.feature_index, device->onboard_profiles.active_sector, device->onboard_profiles.sector_size);
+            if (!profile || !valid_sector_crc(*profile) || profile->size() < 13) continue;
+            if (!set_default && !device->dpi.sensors.empty() && !dpi_supported(device->dpi.sensors.front(), dpi)) continue;
+            const std::size_t dpi_offset = 3 + static_cast<std::size_t>(slot) * 2;
+            if (set_default) {
+                if (profile->at(1) == slot) {
+                    std::cout << "DPI slot " << static_cast<unsigned>(slot + 1) << " is already the default.\n";
+                    return 0;
+                }
+            } else if (static_cast<std::uint16_t>(profile->at(dpi_offset) | profile->at(dpi_offset + 1) << 8) == dpi) {
+                std::cout << "DPI slot " << static_cast<unsigned>(slot + 1) << " already matches " << dpi << ".\n";
+                return 0;
+            }
+            const auto path = backup_path(device->onboard_profiles.active_sector);
+            std::vector<std::pair<std::size_t, std::size_t>> mutable_ranges = {{device->onboard_profiles.button_offset, device->onboard_profiles.button_offset + static_cast<std::size_t>(device->onboard_profiles.button_count) * 4}, {1, 13}};
+            if (device->onboard_profiles.profile_format == 3 && profile->size() >= 252) mutable_ranges.push_back({208, 252});
+            if (!save_backup(path, *profile, mutable_ranges)) {
+                std::cerr << "Refusing to overwrite invalid backup: " << path << '\n';
+                return 1;
+            }
+            if (set_default) {
+                profile->at(1) = slot;
+            } else {
+                profile->at(dpi_offset) = static_cast<std::uint8_t>(dpi);
+                profile->at(dpi_offset + 1) = static_cast<std::uint8_t>(dpi >> 8);
+            }
+            set_sector_crc(*profile);
+            if (!write_sector(connection->get(), interface, device_index, device->onboard_profiles.feature_index, device->onboard_profiles.active_sector, *profile)) {
+                std::cerr << "DPI profile write failed; original backup: " << path << '\n';
+                return 1;
+            }
+            const auto lighting_feature = std::find_if(device->features.begin(), device->features.end(), [](const auto& item) { return item.id == 0x8070 && item.present; });
+            if (lighting_feature != device->features.end() && lighting_state_complete(device->lighting) && !restore_lighting_state(connection->get(), interface, device_index, device->lighting)) {
+                std::cerr << "DPI profile write succeeded, but lighting-state restoration failed.\n";
+                return 1;
+            }
+            const auto check = read_sector(connection->get(), interface, device_index, device->onboard_profiles.feature_index, device->onboard_profiles.active_sector, profile->size());
+            const bool verified = check && valid_sector_crc(*check) && (set_default ? check->at(1) == slot : static_cast<std::uint16_t>(check->at(dpi_offset) | check->at(dpi_offset + 1) << 8) == dpi);
+            if (!verified) {
+                std::cerr << "DPI profile readback verification failed; restore with --profile-restore.\n";
+                return 1;
+            }
+            std::cout << (set_default ? "Default DPI slot set to " : "DPI slot ") << static_cast<unsigned>(slot + 1) << (set_default ? ".\n" : " -> " + std::to_string(dpi) + ".\n");
+            return 0;
+        }
+    }
+    std::cerr << "No writable onboard DPI profile found.\n";
     return 1;
 }
 
@@ -756,6 +915,21 @@ int bind_onboard_button(std::uint8_t button, const std::array<std::uint8_t, 4>& 
     return bind_onboard_button_impl(button, spec);
 }
 
+int set_dpi(std::uint8_t sensor, std::uint16_t dpi) {
+    ScopedOutputSilencer silencer;
+    return set_dpi_impl(sensor, dpi);
+}
+
+int set_onboard_dpi(std::uint8_t slot, std::uint16_t dpi) {
+    ScopedOutputSilencer silencer;
+    return set_onboard_dpi_impl(slot, dpi, false);
+}
+
+int set_onboard_default_dpi(std::uint8_t slot) {
+    ScopedOutputSilencer silencer;
+    return set_onboard_dpi_impl(slot, 0, true);
+}
+
 int restore_onboard_profile() {
     ScopedOutputSilencer silencer;
     return restore_onboard_profile_impl();
@@ -777,6 +951,18 @@ std::vector<HidppDeviceInfo> probe_logitech_hidpp(const std::vector<HidDeviceInf
 }
 
 int bind_onboard_button(std::uint8_t, const std::array<std::uint8_t, 4>&) {
+    return 1;
+}
+
+int set_dpi(std::uint8_t, std::uint16_t) {
+    return 1;
+}
+
+int set_onboard_dpi(std::uint8_t, std::uint16_t) {
+    return 1;
+}
+
+int set_onboard_default_dpi(std::uint8_t) {
     return 1;
 }
 
