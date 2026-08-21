@@ -74,6 +74,20 @@ struct HidppLightingInfo {
     std::vector<HidppLightingZoneInfo> zones;
 };
 
+struct HidppBatteryInfo {
+    bool readable = false;
+    std::uint16_t feature_id = 0;
+    std::uint8_t feature_index = 0;
+    bool percentage_readable = false;
+    std::uint8_t percentage = 0;
+    bool percentage_estimated = false;
+    bool voltage_readable = false;
+    std::uint16_t voltage_mv = 0;
+    std::uint8_t status = 0;
+    std::uint8_t level = 0;
+    std::uint8_t flags = 0;
+};
+
 struct HidppDeviceInfo {
     std::wstring path;
     std::wstring product;
@@ -84,6 +98,7 @@ struct HidppDeviceInfo {
     std::vector<HidppFeatureInfo> features;
     HidppOnboardProfileInfo onboard_profiles;
     HidppLightingInfo lighting;
+    HidppBatteryInfo battery;
 };
 
 std::vector<HidppDeviceInfo> probe_logitech_hidpp(const std::vector<HidDeviceInfo>& interfaces);

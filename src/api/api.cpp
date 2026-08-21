@@ -171,6 +171,7 @@ int logipro_snapshot_get_device(const logipro_snapshot_t* snapshot, size_t index
     const auto& device = snapshot->devices[index];
     const auto& onboard = device.onboard_profiles;
     const auto& lighting = device.lighting;
+    const auto& battery = device.battery;
     *out_info = {};
     out_info->path = snapshot->device_paths[index].c_str();
     out_info->product = snapshot->device_products[index].c_str();
@@ -201,6 +202,17 @@ int logipro_snapshot_get_device(const logipro_snapshot_t* snapshot, size_t index
     out_info->lighting_software_control = lighting.software_control;
     out_info->lighting_sync_events = lighting.sync_events;
     out_info->lighting_zone_records = lighting.zones.size();
+    out_info->battery_readable = battery.readable ? 1 : 0;
+    out_info->battery_feature_id = battery.feature_id;
+    out_info->battery_feature_index = battery.feature_index;
+    out_info->battery_percentage_readable = battery.percentage_readable ? 1 : 0;
+    out_info->battery_percentage = battery.percentage;
+    out_info->battery_percentage_estimated = battery.percentage_estimated ? 1 : 0;
+    out_info->battery_voltage_readable = battery.voltage_readable ? 1 : 0;
+    out_info->battery_voltage_mv = battery.voltage_mv;
+    out_info->battery_status = battery.status;
+    out_info->battery_level = battery.level;
+    out_info->battery_flags = battery.flags;
     return LOGIPRO_OK;
 }
 

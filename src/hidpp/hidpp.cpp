@@ -309,6 +309,59 @@ std::optional<logipro::HidppLightingInfo> read_lighting_state(HANDLE handle, con
     return result;
 }
 
+std::optional<logipro::HidppBatteryInfo> read_battery_state(HANDLE handle, const logipro::HidDeviceInfo& device, std::uint8_t device_index, const std::vector<logipro::HidppFeatureInfo>& features) {
+    const auto find_feature = [&features](std::uint16_t id) {
+        return std::find_if(features.begin(), features.end(), [id](const auto& feature) { return feature.id == id && feature.present; });
+    };
+    const auto unified_feature = find_feature(0x1004);
+    if (unified_feature != features.end()) {
+        const auto capabilities = call(handle, device, device_index, unified_feature->index, 0x00, {0x00, 0x00, 0x00});
+        const auto info = call(handle, device, device_index, unified_feature->index, 0x10, {0x00, 0x00, 0x00});
+        if (capabilities && capabilities->size() >= 2 && info && info->size() >= 3) {
+            logipro::HidppBatteryInfo result;
+            result.readable = true;
+            result.feature_id = 0x1004;
+            result.feature_index = unified_feature->index;
+            result.percentage_readable = (capabilities->at(1) & 0x02) != 0;
+            result.percentage = info->at(0);
+            result.level = info->at(1);
+            result.status = info->at(2);
+            return result;
+        }
+    }
+    const auto status_feature = find_feature(0x1000);
+    if (status_feature != features.end()) {
+        const auto info = call(handle, device, device_index, status_feature->index, 0x00, {0x00, 0x00, 0x00});
+        if (info && info->size() >= 3) {
+            logipro::HidppBatteryInfo result;
+            result.readable = true;
+            result.feature_id = 0x1000;
+            result.feature_index = status_feature->index;
+            result.percentage_readable = true;
+            result.percentage = info->at(0);
+            result.level = info->at(1);
+            result.status = info->at(2);
+            return result;
+        }
+    }
+    const auto voltage_feature = find_feature(0x1001);
+    if (voltage_feature == features.end()) return std::nullopt;
+    const auto voltage = call(handle, device, device_index, voltage_feature->index, 0x00, {0x00, 0x00, 0x00});
+    if (!voltage || voltage->size() < 3) return std::nullopt;
+    logipro::HidppBatteryInfo result;
+    result.readable = true;
+    result.feature_id = 0x1001;
+    result.feature_index = voltage_feature->index;
+    result.voltage_readable = true;
+    result.voltage_mv = static_cast<std::uint16_t>(voltage->at(0) << 8 | voltage->at(1));
+    result.flags = voltage->at(2);
+    result.status = result.flags;
+    result.percentage_readable = true;
+    result.percentage_estimated = true;
+    result.percentage = static_cast<std::uint8_t>(std::clamp((static_cast<int>(result.voltage_mv) - 3500) * 100 / 700, 0, 100));
+    return result;
+}
+
 void set_sector_crc(std::vector<std::uint8_t>& sector) {
     const auto crc = crc16_ccitt_false(sector, sector.size() - 2);
     sector[sector.size() - 2] = static_cast<std::uint8_t>(crc >> 8);
@@ -509,6 +562,9 @@ std::optional<logipro::HidppDeviceInfo> probe_interface(const logipro::HidDevice
         if (const auto snapshot = read_lighting_state(connection->get(), interface, device_index, lighting_feature->index)) {
             result.lighting = *snapshot;
         }
+    }
+    if (const auto battery = read_battery_state(connection->get(), interface, device_index, result.features)) {
+        result.battery = *battery;
     }
     return result;
 }

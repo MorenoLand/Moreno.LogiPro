@@ -61,6 +61,17 @@ typedef struct {
     uint8_t lighting_software_control;
     uint8_t lighting_sync_events;
     size_t lighting_zone_records;
+    uint8_t battery_readable;
+    uint16_t battery_feature_id;
+    uint8_t battery_feature_index;
+    uint8_t battery_percentage_readable;
+    uint8_t battery_percentage;
+    uint8_t battery_percentage_estimated;
+    uint8_t battery_voltage_readable;
+    uint16_t battery_voltage_mv;
+    uint8_t battery_status;
+    uint8_t battery_level;
+    uint8_t battery_flags;
 } logipro_device_info_t;
 
 typedef struct {

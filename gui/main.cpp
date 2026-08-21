@@ -1,6 +1,7 @@
 #include "logipro/api.h"
 #include "logipro/app.hpp"
 
+#include <gio/gio.h>
 #include <gtk/gtk.h>
 
 #include <array>
@@ -24,6 +25,7 @@ struct UiState {
     GtkLabel* connection = nullptr;
     GtkLabel* protocol = nullptr;
     GtkLabel* features = nullptr;
+    GtkLabel* battery = nullptr;
     GtkLabel* profile_state = nullptr;
     GtkLabel* profile_detail = nullptr;
     GtkLabel* profile_crc = nullptr;
@@ -32,12 +34,16 @@ struct UiState {
     GtkLabel* lighting_zones = nullptr;
     GtkLabel* lighting_control = nullptr;
     GtkGrid* buttons_grid = nullptr;
+    GtkWindow* window = nullptr;
+    GtkButton* refresh = nullptr;
     GtkButton* lighting_off = nullptr;
+    bool busy = false;
+    bool lighting_available = false;
 };
 
-struct SnapshotGuard {
-    logipro_snapshot_t* value = nullptr;
-    ~SnapshotGuard() { logipro_snapshot_destroy(value); }
+struct SnapshotResult {
+    int status = LOGIPRO_INTERNAL_ERROR;
+    logipro_snapshot_t* snapshot = nullptr;
 };
 
 bool has_flag(int argc, char* const argv[], std::string_view flag) {
@@ -70,6 +76,12 @@ void set_status(UiState* state, const char* text, const char* css_class) {
     gtk_widget_remove_css_class(GTK_WIDGET(state->status), "status-error");
     gtk_widget_add_css_class(GTK_WIDGET(state->status), css_class);
     gtk_label_set_text(state->status, text);
+}
+
+void set_busy(UiState* state, bool busy) {
+    state->busy = busy;
+    gtk_widget_set_sensitive(GTK_WIDGET(state->refresh), !busy);
+    gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), !busy && state->lighting_available);
 }
 
 GtkWidget* card(const char* title, const char* caption, GtkWidget* content) {
@@ -155,6 +167,7 @@ void reset_ui(UiState* state) {
     set_text(state->connection, "Not detected");
     set_text(state->protocol, "—");
     set_text(state->features, "—");
+    set_text(state->battery, "Unavailable");
     set_text(state->profile_state, "Unavailable");
     set_text(state->profile_detail, "Connect the receiver to read its onboard profile.");
     set_indicator(state->profile_crc, "Not checked", false);
@@ -162,6 +175,7 @@ void reset_ui(UiState* state) {
     set_text(state->lighting_state, "Unavailable");
     set_text(state->lighting_zones, "—");
     set_text(state->lighting_control, "—");
+    state->lighting_available = false;
     gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), FALSE);
     clear_buttons(state);
     GtkWidget* empty = label("No onboard button map is available.", "muted");
@@ -169,18 +183,35 @@ void reset_ui(UiState* state) {
     gtk_grid_attach(state->buttons_grid, empty, 0, 0, 2, 1);
 }
 
-void refresh_view(UiState* state) {
-    set_status(state, "Reading device", "status-neutral");
-    SnapshotGuard snapshot;
-    const int result = logipro_snapshot_create(&snapshot.value);
-    if (result != LOGIPRO_OK || logipro_snapshot_device_count(snapshot.value) == 0) {
+std::string battery_text(const logipro_device_info_t& device) {
+    if (!device.battery_readable) return "Unavailable";
+    std::string result;
+    if (device.battery_percentage_readable) {
+        result = (device.battery_percentage_estimated ? "~" : "") + std::to_string(device.battery_percentage) + "%";
+        if (device.battery_percentage_estimated) result += " estimated";
+    }
+    if (device.battery_voltage_readable) {
+        if (!result.empty()) result += " • ";
+        result += std::to_string(device.battery_voltage_mv) + " mV";
+    }
+    if (device.battery_feature_id == 0x1001) {
+        result += (result.empty() ? "" : " • ") + std::string((device.battery_flags & 0x80) != 0 ? "External power" : "Battery power");
+    }
+    return result.empty() ? "Available" : result;
+}
+
+void apply_snapshot(UiState* state, const SnapshotResult& result) {
+    const int status = result.status;
+    if (status != LOGIPRO_OK || result.snapshot == nullptr || logipro_snapshot_device_count(result.snapshot) == 0) {
         reset_ui(state);
-        set_status(state, result == LOGIPRO_OK ? "No device found" : "Unable to read device", result == LOGIPRO_OK ? "status-warning" : "status-error");
+        set_busy(state, false);
+        set_status(state, status == LOGIPRO_OK ? "No device found" : "Unable to read device", status == LOGIPRO_OK ? "status-warning" : "status-error");
         return;
     }
     logipro_device_info_t device{};
-    if (logipro_snapshot_get_device(snapshot.value, 0, &device) != LOGIPRO_OK) {
+    if (logipro_snapshot_get_device(result.snapshot, 0, &device) != LOGIPRO_OK) {
         reset_ui(state);
+        set_busy(state, false);
         set_status(state, "Unable to read device", "status-error");
         return;
     }
@@ -188,6 +219,7 @@ void refresh_view(UiState* state) {
     set_text(state->connection, "USB receiver connected");
     set_text(state->protocol, "HID++ " + std::to_string(device.protocol_major) + "." + std::to_string(device.protocol_minor));
     set_text(state->features, std::to_string(device.feature_count) + " discovered");
+    set_text(state->battery, battery_text(device));
     if (device.onboard_profiles_readable) {
         set_indicator(state->profile_state, "Ready", true);
         set_text(state->profile_detail, "Format " + std::to_string(device.profile_format) + " • " + std::to_string(device.button_count) + " buttons • sector " + hex_value(device.active_sector, 4));
@@ -208,7 +240,7 @@ void refresh_view(UiState* state) {
         set_text(state->lighting_zones, "—");
         set_text(state->lighting_control, "—");
     }
-    gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), device.onboard_profiles_readable != 0);
+    state->lighting_available = device.onboard_profiles_readable != 0;
     clear_buttons(state);
     const std::uint8_t button_count = device.button_count > 8 ? 8 : device.button_count;
     if (button_count == 0) {
@@ -217,29 +249,73 @@ void refresh_view(UiState* state) {
     } else {
         for (std::uint8_t button = 1; button <= button_count; ++button) {
             std::array<std::uint8_t, 4> spec{};
-            const std::string value = logipro_snapshot_get_button(snapshot.value, 0, button, spec.data()) == LOGIPRO_OK ? binding_name(spec) : "Unavailable";
+            const std::string value = logipro_snapshot_get_button(result.snapshot, 0, button, spec.data()) == LOGIPRO_OK ? binding_name(spec) : "Unavailable";
             GtkWidget* tile = binding_tile(button, value);
             gtk_grid_attach(state->buttons_grid, tile, (button - 1) % 2, (button - 1) / 2, 1, 1);
         }
     }
+    set_busy(state, false);
     set_status(state, "Connected", "status-good");
 }
 
+void destroy_snapshot_result(gpointer data) {
+    auto* result = static_cast<SnapshotResult*>(data);
+    logipro_snapshot_destroy(result->snapshot);
+    delete result;
+}
+
+void snapshot_complete(GObject* source, GAsyncResult* async_result, gpointer) {
+    auto* state = static_cast<UiState*>(g_object_get_data(source, "logipro-state"));
+    if (state == nullptr) return;
+    auto* result = static_cast<SnapshotResult*>(g_task_propagate_pointer(G_TASK(async_result), nullptr));
+    if (result == nullptr) {
+        reset_ui(state);
+        set_busy(state, false);
+        set_status(state, "Unable to read device", "status-error");
+        return;
+    }
+    apply_snapshot(state, *result);
+}
+
+void start_snapshot_read(UiState* state) {
+    set_busy(state, true);
+    set_status(state, "Reading device", "status-neutral");
+    GTask* task = g_task_new(G_OBJECT(state->window), nullptr, snapshot_complete, nullptr);
+    g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer, GCancellable*) {
+        auto* result = new SnapshotResult();
+        result->status = logipro_snapshot_create(&result->snapshot);
+        g_task_return_pointer(task, result, destroy_snapshot_result);
+    });
+    g_object_unref(task);
+}
+
+void lighting_complete(GObject* source, GAsyncResult* async_result, gpointer) {
+    auto* state = static_cast<UiState*>(g_object_get_data(source, "logipro-state"));
+    if (state == nullptr) return;
+    const int result = g_task_propagate_int(G_TASK(async_result), nullptr);
+    if (result != LOGIPRO_OK) {
+        set_busy(state, false);
+        set_status(state, "Lighting update failed", "status-error");
+        return;
+    }
+    start_snapshot_read(state);
+}
+
 void refresh_clicked(GtkButton*, gpointer data) {
-    refresh_view(static_cast<UiState*>(data));
+    auto* state = static_cast<UiState*>(data);
+    if (!state->busy) start_snapshot_read(state);
 }
 
 void lighting_off_clicked(GtkButton*, gpointer data) {
     auto* state = static_cast<UiState*>(data);
-    gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), FALSE);
+    if (state->busy) return;
+    set_busy(state, true);
     set_status(state, "Updating lighting", "status-neutral");
-    const int result = logipro_profile_lighting_off();
-    if (result != LOGIPRO_OK) {
-        set_status(state, "Lighting update failed", "status-error");
-        gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), TRUE);
-        return;
-    }
-    refresh_view(state);
+    GTask* task = g_task_new(G_OBJECT(state->window), nullptr, lighting_complete, nullptr);
+    g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer, GCancellable*) {
+        g_task_return_int(task, logipro_profile_lighting_off());
+    });
+    g_object_unref(task);
 }
 
 void install_css() {
@@ -290,6 +366,8 @@ void activate(GtkApplication* application, gpointer) {
     auto* state = new UiState();
     g_object_set_data_full(G_OBJECT(window), "logipro-state", state, [](gpointer value) { delete static_cast<UiState*>(value); });
     state->status = GTK_LABEL(label("Reading device", "status-neutral"));
+    state->window = window;
+    state->refresh = GTK_BUTTON(refresh);
 
     GtkWidget* page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
     gtk_widget_add_css_class(page, "page");
@@ -306,6 +384,7 @@ void activate(GtkApplication* application, gpointer) {
     state->connection = info_row(GTK_GRID(device_grid), 1, "Connection");
     state->protocol = info_row(GTK_GRID(device_grid), 2, "Protocol");
     state->features = info_row(GTK_GRID(device_grid), 3, "Features");
+    state->battery = info_row(GTK_GRID(device_grid), 4, "Battery");
 
     GtkWidget* profile_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(profile_grid), 10);
@@ -349,7 +428,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_window_set_child(window, scroll);
     g_signal_connect(refresh, "clicked", G_CALLBACK(refresh_clicked), state);
     g_signal_connect(state->lighting_off, "clicked", G_CALLBACK(lighting_off_clicked), state);
-    refresh_view(state);
+    start_snapshot_read(state);
     gtk_window_present(window);
 }
 
