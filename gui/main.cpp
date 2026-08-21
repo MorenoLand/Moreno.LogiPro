@@ -620,16 +620,16 @@ void install_css() {
     static constexpr const char css[] =
         "* { font-family: 'Segoe UI', sans-serif; }"
         "window { background: #0b0d10; color: #f3f6fb; }"
-        "headerbar { background: #0b0d10; border-bottom: 1px solid #252932; box-shadow: none; }"
-        ".page { padding: 24px 30px 30px; }"
-        ".status-row { background: #151a20; border: 1px solid #252c35; border-radius: 10px; padding: 10px 14px; }"
+        "headerbar { background: #0b0d10; border-bottom: 1px solid #252932; box-shadow: none; min-height: 52px; padding: 0 10px; }"
+        ".page { padding: 16px 24px 20px; }"
+        ".status-row { background: #151a20; border: 1px solid #252c35; border-radius: 10px; padding: 8px 12px; }"
         ".app-title { color: #f5f7fb; font-size: 19px; font-weight: 800; }"
         ".app-subtitle { color: #747d8d; font-size: 11px; }"
         ".section-title { color: #f0f3f8; font-size: 15px; font-weight: 700; }"
         ".section-caption { color: #7f8898; font-size: 12px; }"
         ".card { background: #191c21; border: 1px solid #2a2e36; border-radius: 14px; }"
         ".card > border { border-radius: 14px; }"
-        ".card-content { padding: 19px; }"
+        ".card-content { padding: 14px; }"
         ".muted { color: #818a9a; }"
         ".value { color: #eef2f8; font-weight: 600; }"
         ".status-neutral, .status-good, .status-warning, .status-error { padding: 7px 12px; border-radius: 999px; font-weight: 700; }"
@@ -639,10 +639,10 @@ void install_css() {
         ".status-error { background: #401b21; color: #ff8c99; }"
         ".good { color: #73e5a3; }"
         ".warning { color: #ffc85c; }"
-        ".tab-switcher { background: #15181d; border: 1px solid #2a2e36; border-radius: 10px; padding: 3px; }"
-        ".tab-switcher button { color: #8992a1; border-radius: 7px; padding: 9px 18px; }"
+        ".tab-switcher { background: #15181d; border: 1px solid #2a2e36; border-radius: 8px; padding: 2px; }"
+        ".tab-switcher button { color: #8992a1; border-radius: 6px; padding: 5px 12px; min-height: 28px; }"
         ".tab-switcher button:checked { background: #27303a; color: #f2f6fb; }"
-        "button { background: #252a31; color: #e8edf5; border: 1px solid #343a45; border-radius: 8px; padding: 8px 13px; }"
+        "button { background: #252a31; color: #e8edf5; border: 1px solid #343a45; border-radius: 6px; padding: 5px 10px; min-height: 28px; }"
         "button:hover { background: #303640; }"
         "button.suggested-action { background: #168ee2; color: #ffffff; border-color: #32adff; }"
         "button.suggested-action:hover { background: #2aa6f4; }"
@@ -651,10 +651,10 @@ void install_css() {
         ".binding-tile { background: #20242b; border: 1px solid #303640; border-radius: 10px; padding: 12px; }"
         ".binding-number { color: #7f8999; font-size: 10px; font-weight: 800; }"
         ".binding-value { color: #f1f4f8; font-weight: 600; }"
-        ".dpi-chip { min-width: 84px; min-height: 46px; background: #20242b; border: 1px solid #343a45; font-size: 16px; font-weight: 700; }"
+        ".dpi-chip { min-width: 72px; min-height: 34px; background: #20242b; border: 1px solid #343a45; font-size: 14px; font-weight: 700; }"
         ".dpi-chip:hover { background: #2a3039; }"
         ".dpi-chip.selected { background: #148fdf; border-color: #48b9ff; color: #ffffff; }"
-        ".dpi-value { color: #f5f7fb; font-size: 28px; font-weight: 800; }"
+        ".dpi-value { color: #f5f7fb; font-size: 23px; font-weight: 800; }"
         ".dpi-caption { color: #7f8999; font-size: 11px; font-weight: 700; letter-spacing: 0.4px; }"
         ".dpi-selected { color: #2eaeff; font-size: 17px; font-weight: 800; }"
         ".dpi-scale trough { background: #2b3038; min-height: 8px; border-radius: 999px; }"
@@ -663,10 +663,13 @@ void install_css() {
         ".mouse-picture { padding: 6px; }"
         ".hotspot { background: #20252c; border: 1px solid #3a424e; color: #eaf1f8; font-size: 11px; padding: 6px 9px; }"
         ".hotspot:hover { background: #168fdf; border-color: #49baff; }"
-        ".hero { background: linear-gradient(135deg, #1a2027, #121519); border: 1px solid #2d3540; border-radius: 16px; padding: 22px; }"
+        ".hero { background: linear-gradient(135deg, #1a2027, #121519); border: 1px solid #2d3540; border-radius: 14px; padding: 15px 18px; }"
         ".hero-title { color: #f5f7fb; font-size: 23px; font-weight: 800; }"
         ".hero-caption { color: #8993a2; font-size: 12px; }"
-        ".hero-stat { color: #2caeff; font-size: 25px; font-weight: 800; }";
+        ".hero-stat { color: #2caeff; font-size: 25px; font-weight: 800; }"
+        "headerbar windowcontrols button, windowcontrols button { background: transparent; border: none; box-shadow: none; border-radius: 0; color: #8e97a5; min-width: 34px; min-height: 34px; padding: 0; }"
+        "headerbar windowcontrols button:hover, windowcontrols button:hover { background: #1d2229; color: #f3f6fb; }"
+        "headerbar windowcontrols button:active, windowcontrols button:active { background: #27303a; }";
     GtkCssProvider* provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider, css);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -698,12 +701,13 @@ void activate(GtkApplication* application, gpointer) {
     install_css();
     GtkWindow* window = GTK_WINDOW(gtk_application_window_new(application));
     gtk_window_set_title(window, "LogiPro");
-    gtk_window_set_default_size(window, 1080, 780);
+    gtk_window_set_default_size(window, 1080, 720);
     GtkWidget* header = gtk_header_bar_new();
     GtkWidget* heading = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_append(GTK_BOX(heading), label("LogiPro", "app-title"));
     gtk_box_append(GTK_BOX(heading), label("Open HID++ control for Logitech devices", "app-subtitle"));
-    gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), heading);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), heading);
+    gtk_widget_set_margin_end(heading, 18);
     GtkWidget* refresh = gtk_button_new_with_label("Refresh");
     gtk_widget_add_css_class(refresh, "suggested-action");
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh);
@@ -838,7 +842,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(rail_box), rail_heading);
     state->dpi_rail = GTK_DRAWING_AREA(gtk_drawing_area_new());
     gtk_widget_set_hexpand(GTK_WIDGET(state->dpi_rail), TRUE);
-    gtk_widget_set_size_request(GTK_WIDGET(state->dpi_rail), 440, 116);
+    gtk_widget_set_size_request(GTK_WIDGET(state->dpi_rail), 440, 100);
     gtk_drawing_area_set_draw_func(state->dpi_rail, dpi_rail_draw, state, nullptr);
     GtkGestureClick* rail_gesture = GTK_GESTURE_CLICK(gtk_gesture_click_new());
     gtk_widget_add_controller(GTK_WIDGET(state->dpi_rail), GTK_EVENT_CONTROLLER(rail_gesture));
@@ -897,7 +901,7 @@ void activate(GtkApplication* application, gpointer) {
     GtkWidget* switcher = gtk_stack_switcher_new();
     gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(switcher), GTK_STACK(stack));
     gtk_widget_add_css_class(switcher, "tab-switcher");
-    gtk_box_append(GTK_BOX(page), switcher);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), switcher);
     gtk_box_append(GTK_BOX(page), stack);
 
     GtkWidget* scroll = gtk_scrolled_window_new();

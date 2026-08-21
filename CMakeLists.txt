@@ -63,7 +63,7 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
 find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
-set(LOGIPRO_GUI_RESOURCE_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/logipro_gui_resources.c")
+set(LOGIPRO_GUI_RESOURCE_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/logipro_gui_resources.cpp")
 add_custom_command(
     OUTPUT "${LOGIPRO_GUI_RESOURCE_SOURCE}"
     COMMAND "${GLIB_COMPILE_RESOURCES}" --sourcedir=${CMAKE_CURRENT_SOURCE_DIR}/gui --generate-source --target=${LOGIPRO_GUI_RESOURCE_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/gui/resources.gresource.xml
@@ -83,6 +83,11 @@ if(WIN32)
     target_link_libraries(logipro PRIVATE shell32)
 endif()
 logipro_set_output_directories(logipro)
+set_target_properties(logipro PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/exe-import")
+foreach(configuration Debug Release RelWithDebInfo MinSizeRel)
+    string(TOUPPER "${configuration}" configuration_upper)
+    set_target_properties(logipro PROPERTIES ARCHIVE_OUTPUT_DIRECTORY_${configuration_upper} "${CMAKE_CURRENT_BINARY_DIR}/exe-import")
+endforeach()
 install(TARGETS logipro RUNTIME DESTINATION bin)
 
 if(MINGW)
