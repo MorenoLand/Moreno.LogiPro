@@ -28,7 +28,7 @@ Set either option to `OFF` when only the DLL or one client is needed. The genera
 
 ## CLI
 
-Run the executable from the generated build directory:
+Run the executable from the project-root `bin` directory:
 
 ```powershell
 .\bin\logipro.exe --probe-hidpp
