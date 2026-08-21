@@ -30,9 +30,6 @@ struct UiState {
     GtkLabel* protocol = nullptr;
     GtkLabel* features = nullptr;
     GtkLabel* battery = nullptr;
-    GtkLabel* dpi_current = nullptr;
-    GtkLabel* dpi_range = nullptr;
-    GtkLabel* dpi_profile_state = nullptr;
     GtkLabel* profile_state = nullptr;
     GtkLabel* profile_detail = nullptr;
     GtkLabel* profile_crc = nullptr;
@@ -44,9 +41,14 @@ struct UiState {
     GtkLabel* lighting_effect_hint = nullptr;
     GtkLabel* lighting_rate_value = nullptr;
     GtkLabel* lighting_brightness_value = nullptr;
+    GtkDrawingArea* lighting_preview = nullptr;
     GtkGrid* buttons_grid = nullptr;
+    GtkLabel* mapping_selected = nullptr;
+    GtkStack* mapping_views = nullptr;
+    GtkWidget* mapping_palette = nullptr;
+    GtkWidget* mapping_categories = nullptr;
+    std::array<GtkWidget*, 8> mapping_hotspots{};
     GtkWindow* window = nullptr;
-    GtkButton* refresh = nullptr;
     GtkButton* lighting_off = nullptr;
     GtkButton* lighting_sync = nullptr;
     GtkDropDown* lighting_effect = nullptr;
@@ -55,10 +57,8 @@ struct UiState {
     GtkScale* lighting_brightness = nullptr;
     GtkWidget* lighting_controls = nullptr;
     GtkWidget* sensitivity_box = nullptr;
-    GtkScale* dpi_live_scale = nullptr;
     GtkLabel* dpi_live_value = nullptr;
     GtkButton* dpi_live_apply = nullptr;
-    GtkScale* dpi_profile_scale = nullptr;
     GtkDrawingArea* dpi_rail = nullptr;
     GtkLabel* dpi_selected_value = nullptr;
     GtkLabel* dpi_selected_detail = nullptr;
@@ -71,15 +71,24 @@ struct UiState {
     std::uint8_t dpi_shift_index = 0;
     std::size_t dpi_selected_slot = 0;
     std::uint8_t dpi_sensor_index = 0;
+    std::size_t dpi_drag_slot = 0;
+    double dpi_drag_start_x = 0;
+    bool dpi_dragging = false;
     double dpi_min = 50;
     double dpi_max = 25600;
     double dpi_step = 50;
     std::array<std::uint16_t, 16> lighting_effect_ids{};
     std::size_t lighting_effect_count = 0;
+    std::uint16_t lighting_preview_effect = 0;
+    double lighting_phase = 0;
+    guint refresh_source = 0;
+    guint lighting_animation_source = 0;
+    std::uint8_t mapping_selected_button = 1;
     bool busy = false;
     bool lighting_available = false;
     bool lighting_controls_available = false;
     bool dpi_available = false;
+    bool mapping_available = false;
 };
 
 struct SnapshotResult {
@@ -94,6 +103,11 @@ struct DpiOperation {
     std::uint8_t sensor = 0;
     std::uint8_t slot = 0;
     std::uint16_t dpi = 0;
+};
+
+struct MappingOperation {
+    std::uint8_t button = 0;
+    std::array<std::uint8_t, 4> spec{};
 };
 
 enum class LightingOperationKind { Effect, SoftwareControl };
@@ -119,10 +133,12 @@ GtkWidget* label(const char* text, const char* css_class = nullptr) {
 }
 
 void set_text(GtkLabel* target, const std::string& text) {
+    if (target == nullptr) return;
     gtk_label_set_text(target, text.c_str());
 }
 
 void set_indicator(GtkLabel* target, const char* text, bool good) {
+    if (target == nullptr) return;
     gtk_widget_remove_css_class(GTK_WIDGET(target), "good");
     gtk_widget_remove_css_class(GTK_WIDGET(target), "warning");
     gtk_widget_add_css_class(GTK_WIDGET(target), good ? "good" : "warning");
@@ -130,6 +146,7 @@ void set_indicator(GtkLabel* target, const char* text, bool good) {
 }
 
 void set_status(UiState* state, const char* text, const char* css_class) {
+    if (state == nullptr || state->status == nullptr) return;
     gtk_widget_remove_css_class(GTK_WIDGET(state->status), "status-neutral");
     gtk_widget_remove_css_class(GTK_WIDGET(state->status), "status-good");
     gtk_widget_remove_css_class(GTK_WIDGET(state->status), "status-warning");
@@ -140,10 +157,10 @@ void set_status(UiState* state, const char* text, const char* css_class) {
 
 void set_busy(UiState* state, bool busy) {
     state->busy = busy;
-    gtk_widget_set_sensitive(GTK_WIDGET(state->refresh), !busy);
-    gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), !busy && state->lighting_available);
-    gtk_widget_set_sensitive(state->lighting_controls, !busy && state->lighting_controls_available);
-    gtk_widget_set_sensitive(state->sensitivity_box, !busy && state->dpi_available);
+    if (state->lighting_off != nullptr) gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), !busy && state->lighting_available);
+    if (state->lighting_controls != nullptr) gtk_widget_set_sensitive(state->lighting_controls, !busy && state->lighting_controls_available);
+    if (state->sensitivity_box != nullptr) gtk_widget_set_sensitive(state->sensitivity_box, !busy && state->dpi_available);
+    if (state->mapping_palette != nullptr) gtk_widget_set_sensitive(state->mapping_palette, !busy && state->mapping_available);
 }
 
 GtkWidget* card(const char* title, const char* caption, GtkWidget* content) {
@@ -291,7 +308,6 @@ void update_dpi_controls(UiState* state) {
     } else {
         if (state->dpi_selected_slot >= state->dpi_profile_count) state->dpi_selected_slot = 0;
         const std::uint16_t value = state->dpi_values[state->dpi_selected_slot];
-        if (state->dpi_profile_scale != nullptr) gtk_range_set_value(GTK_RANGE(state->dpi_profile_scale), value);
         if (state->dpi_selected_value != nullptr) set_text(state->dpi_selected_value, dpi_text(value));
         if (state->dpi_selected_detail != nullptr) {
             std::string detail = "Level " + std::to_string(state->dpi_selected_slot + 1);
@@ -317,16 +333,11 @@ void reset_ui(UiState* state) {
     set_text(state->protocol, "—");
     set_text(state->features, "—");
     set_text(state->battery, "Unavailable");
-    set_text(state->dpi_current, "Unavailable");
-    set_text(state->dpi_range, "—");
-    set_text(state->dpi_profile_state, "Unavailable");
     state->dpi_profile_count = 0;
     state->dpi_default_index = 0;
     state->dpi_shift_index = 0;
     state->dpi_selected_slot = 0;
     state->dpi_values.fill(0);
-    if (state->dpi_live_scale != nullptr) gtk_range_set_value(GTK_RANGE(state->dpi_live_scale), state->dpi_min);
-    if (state->dpi_profile_scale != nullptr) gtk_range_set_value(GTK_RANGE(state->dpi_profile_scale), state->dpi_min);
     if (state->dpi_live_value != nullptr) set_text(state->dpi_live_value, "Unavailable");
     update_dpi_controls(state);
     set_text(state->profile_state, "Unavailable");
@@ -344,10 +355,13 @@ void reset_ui(UiState* state) {
     if (state->lighting_rate != nullptr) gtk_range_set_value(GTK_RANGE(state->lighting_rate), 8000);
     if (state->lighting_brightness != nullptr) gtk_range_set_value(GTK_RANGE(state->lighting_brightness), 100);
     update_lighting_effect_model(state, {}, 0, 0);
+    state->lighting_preview_effect = 0;
+    if (state->lighting_preview != nullptr) gtk_widget_queue_draw(GTK_WIDGET(state->lighting_preview));
     state->lighting_available = false;
     state->lighting_controls_available = false;
     state->dpi_available = false;
-    gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), FALSE);
+    state->mapping_available = false;
+    if (state->lighting_off != nullptr) gtk_widget_set_sensitive(GTK_WIDGET(state->lighting_off), FALSE);
     clear_buttons(state);
     GtkWidget* empty = label("No onboard button map is available.", "muted");
     gtk_widget_set_margin_top(empty, 4);
@@ -376,36 +390,22 @@ void update_dpi_view(UiState* state, const logipro_snapshot_t* snapshot, const l
     if (!device.dpi_readable || device.dpi_sensor_count == 0 || logipro_snapshot_get_dpi_sensor(snapshot, 0, 0, &sensor) != LOGIPRO_OK) {
         state->dpi_available = false;
         state->dpi_profile_count = 0;
-        set_text(state->dpi_current, "Unavailable");
-        set_text(state->dpi_range, "This device does not expose adjustable DPI.");
-        set_text(state->dpi_profile_state, device.dpi_profile_readable ? "Profile values available" : "Unavailable");
         update_dpi_controls(state);
         return;
     }
     state->dpi_available = true;
     state->dpi_sensor_index = sensor.index;
-    set_text(state->dpi_current, std::to_string(sensor.current_dpi) + " DPI");
-    if (sensor.min_dpi != 0 && sensor.max_dpi != 0) {
-        set_text(state->dpi_range, std::to_string(sensor.min_dpi) + "–" + std::to_string(sensor.max_dpi) + " DPI" + (sensor.step == 0 ? "" : " • " + std::to_string(sensor.step) + " DPI steps"));
-    } else {
-        set_text(state->dpi_range, "Device range unavailable");
-    }
     state->dpi_min = sensor.min_dpi == 0 ? 50 : sensor.min_dpi;
     state->dpi_max = sensor.max_dpi == 0 ? 25600 : sensor.max_dpi;
     state->dpi_step = sensor.step == 0 ? 50 : sensor.step;
-    gtk_range_set_range(GTK_RANGE(state->dpi_live_scale), state->dpi_min, state->dpi_max);
-    gtk_range_set_increments(GTK_RANGE(state->dpi_live_scale), state->dpi_step, state->dpi_step * 10);
-    gtk_range_set_value(GTK_RANGE(state->dpi_live_scale), sensor.current_dpi);
     set_text(state->dpi_live_value, dpi_text(sensor.current_dpi));
     if (device.dpi_profile_readable) {
-        set_text(state->dpi_profile_state, std::to_string(device.dpi_profile_count) + " pinned levels • default level " + std::to_string(device.dpi_default_index + 1));
         state->dpi_profile_count = device.dpi_profile_count > state->dpi_values.size() ? static_cast<std::uint8_t>(state->dpi_values.size()) : device.dpi_profile_count;
         state->dpi_default_index = device.dpi_default_index < state->dpi_profile_count ? device.dpi_default_index : 0;
         state->dpi_shift_index = device.dpi_shift_index < state->dpi_profile_count ? device.dpi_shift_index : 0;
         for (std::size_t slot = 0; slot < state->dpi_values.size(); ++slot) state->dpi_values[slot] = device.dpi_profile_values[slot];
         if (state->dpi_selected_slot >= state->dpi_profile_count) state->dpi_selected_slot = state->dpi_default_index;
     } else {
-        set_text(state->dpi_profile_state, "No persistent DPI slots available");
         state->dpi_profile_count = 0;
     }
     update_dpi_controls(state);
@@ -413,7 +413,7 @@ void update_dpi_view(UiState* state, const logipro_snapshot_t* snapshot, const l
 
 bool lighting_zone_supports(const logipro_snapshot_t* snapshot, std::size_t zone_index, std::uint16_t effect_id) {
     logipro_lighting_zone_info_t zone{};
-    if (logipro_snapshot_get_lighting_zone(snapshot, 0, zone_index, &zone) != LOGIPRO_OK || !zone.effect_readable) return false;
+    if (logipro_snapshot_get_lighting_zone(snapshot, 0, zone_index, &zone) != LOGIPRO_OK || zone.effect_count == 0) return false;
     for (std::size_t index = 0; index < zone.effect_count; ++index) {
         std::uint16_t candidate = 0;
         if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, zone_index, index, &candidate) == LOGIPRO_OK && candidate == effect_id) return true;
@@ -428,11 +428,12 @@ void update_lighting_view(UiState* state, const logipro_snapshot_t* snapshot, co
     std::size_t common_count = 0;
     std::uint16_t current_effect = 0;
     logipro_lighting_zone_info_t primary{};
-    if (device.lighting_readable && device.lighting_zone_records > 0 && logipro_snapshot_get_lighting_zone(snapshot, 0, 0, &primary) == LOGIPRO_OK && primary.effect_readable) {
-        current_effect = primary.effect;
+    if (device.lighting_readable && device.lighting_zone_records > 0 && logipro_snapshot_get_lighting_zone(snapshot, 0, 0, &primary) == LOGIPRO_OK && primary.effect_count > 0) {
+        current_effect = primary.effect_readable ? primary.effect : 0;
         for (std::size_t index = 0; index < primary.effect_count && common_count < common.size(); ++index) {
             std::uint16_t effect_id = 0;
             if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, 0, index, &effect_id) != LOGIPRO_OK || std::find(common.begin(), common.begin() + common_count, effect_id) != common.begin() + common_count) continue;
+            if (!primary.effect_readable && index == 0) current_effect = effect_id;
             bool supported = true;
             for (std::size_t zone = 1; zone < device.lighting_zone_records; ++zone) {
                 if (!lighting_zone_supports(snapshot, zone, effect_id)) {
@@ -446,6 +447,7 @@ void update_lighting_view(UiState* state, const logipro_snapshot_t* snapshot, co
         std::size_t selected = 0;
         for (std::size_t index = 0; index < common_count; ++index) if (common[index] == current_effect) selected = index;
         update_lighting_effect_model(state, common, common_count, selected);
+        state->lighting_preview_effect = current_effect;
         set_text(state->lighting_effect_hint, std::to_string(device.lighting_zone_records) + " zones • " + lighting_effect_name(current_effect));
         unsigned int period = 8000;
         unsigned int brightness = 100;
@@ -461,6 +463,7 @@ void update_lighting_view(UiState* state, const logipro_snapshot_t* snapshot, co
         set_text(state->lighting_brightness_value, std::to_string(brightness) + "%");
     } else {
         update_lighting_effect_model(state, common, 0, 0);
+        state->lighting_preview_effect = 0;
         set_text(state->lighting_effect_hint, "No live lighting effects reported");
         gtk_range_set_value(GTK_RANGE(state->lighting_rate), 8000);
         gtk_range_set_value(GTK_RANGE(state->lighting_brightness), 100);
@@ -513,6 +516,7 @@ void apply_snapshot(UiState* state, const SnapshotResult& result) {
     }
     update_lighting_view(state, result.snapshot, device);
     state->lighting_available = device.onboard_profiles_readable != 0;
+    state->mapping_available = device.onboard_profiles_readable != 0;
     clear_buttons(state);
     const std::uint8_t button_count = device.button_count > 8 ? 8 : device.button_count;
     if (button_count == 0) {
@@ -573,11 +577,6 @@ void lighting_complete(GObject* source, GAsyncResult* async_result, gpointer) {
     start_snapshot_read(state);
 }
 
-void refresh_clicked(GtkButton*, gpointer data) {
-    auto* state = static_cast<UiState*>(data);
-    if (!state->busy) start_snapshot_read(state);
-}
-
 void lighting_off_clicked(GtkButton*, gpointer data) {
     auto* state = static_cast<UiState*>(data);
     if (state->busy) return;
@@ -618,6 +617,15 @@ void lighting_sync_clicked(GtkButton*, gpointer data) {
     start_lighting_operation(state, {LightingOperationKind::Effect, state->lighting_effect_ids[selected], period, brightness, false}, "Updating lighting");
 }
 
+void lighting_effect_changed(GObject*, GParamSpec*, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (state->lighting_effect == nullptr || state->lighting_effect_count == 0) return;
+    const auto selected = gtk_drop_down_get_selected(state->lighting_effect);
+    if (selected >= state->lighting_effect_count) return;
+    state->lighting_preview_effect = state->lighting_effect_ids[selected];
+    if (state->lighting_preview != nullptr) gtk_widget_queue_draw(GTK_WIDGET(state->lighting_preview));
+}
+
 gboolean lighting_windows_changed(GtkSwitch*, gboolean active, gpointer data) {
     auto* state = static_cast<UiState*>(data);
     if (!state->busy) start_lighting_operation(state, {LightingOperationKind::SoftwareControl, 0, 8000, 100, active != FALSE}, "Updating lighting control");
@@ -632,6 +640,53 @@ void lighting_rate_changed(GtkRange* range, gpointer data) {
 void lighting_brightness_changed(GtkRange* range, gpointer data) {
     auto* state = static_cast<UiState*>(data);
     set_text(state->lighting_brightness_value, std::to_string(static_cast<unsigned int>(std::lround(gtk_range_get_value(range)))) + "%");
+}
+
+void lighting_preview_draw(GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (state->lighting_preview_effect == 0) return;
+    const double wave = (std::sin(state->lighting_phase * 2.0 * G_PI) + 1.0) * 0.5;
+    double red = 0.15;
+    double green = 0.62;
+    double blue = 1.0;
+    if (state->lighting_preview_effect == 1) {
+        red = 1.0;
+        green = 0.34;
+        blue = 0.06;
+    } else if (state->lighting_preview_effect == 10) {
+        red = 0.84;
+        green = 0.24;
+        blue = 0.92;
+    } else if (state->lighting_preview_effect == 3 || state->lighting_preview_effect == 11) {
+        red = 0.15 + 0.75 * wave;
+        green = 0.42 + 0.45 * (1.0 - wave);
+        blue = 1.0 - 0.55 * wave;
+    }
+    double alpha = 0.88;
+    if (state->lighting_preview_effect == 10 || state->lighting_preview_effect == 11) alpha = 0.30 + 0.60 * wave;
+    if (state->lighting_preview_effect == 7) alpha = 0.30 + 0.70 * std::abs(std::sin(state->lighting_phase * 5.0 * G_PI));
+    const double scale_x = static_cast<double>(width) / 300.0;
+    const double scale_y = static_cast<double>(height) / 340.0;
+    cairo_save(cr);
+    cairo_scale(cr, scale_x, scale_y);
+    cairo_set_source_rgba(cr, red, green, blue, alpha);
+    for (int index = 0; index < 3; ++index) {
+        cairo_arc(cr, 150, 157 + index * 13, 4.5 + 2.0 * alpha, 0, 2 * G_PI);
+        cairo_fill(cr);
+    }
+    cairo_set_line_width(cr, 5);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_arc(cr, 150, 268, 30, 0.25 * G_PI, 0.75 * G_PI);
+    cairo_stroke(cr);
+    cairo_restore(cr);
+}
+
+gboolean lighting_animation_tick(gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    state->lighting_phase += 0.016;
+    if (state->lighting_phase >= 1.0) state->lighting_phase -= 1.0;
+    if (state->lighting_preview != nullptr) gtk_widget_queue_draw(GTK_WIDGET(state->lighting_preview));
+    return G_SOURCE_CONTINUE;
 }
 
 void destroy_dpi_operation(gpointer data) {
@@ -665,30 +720,6 @@ void start_dpi_operation(UiState* state, const DpiOperation& operation, const ch
         g_task_return_int(task, result);
     });
     g_object_unref(task);
-}
-
-void dpi_live_scale_changed(GtkRange* range, gpointer data) {
-    auto* state = static_cast<UiState*>(data);
-    const auto value = snapped_dpi(state, gtk_range_get_value(range));
-    if (std::abs(gtk_range_get_value(range) - value) > 0.1) {
-        gtk_range_set_value(range, value);
-        return;
-    }
-    set_text(state->dpi_live_value, dpi_text(value));
-}
-
-void dpi_profile_scale_changed(GtkRange* range, gpointer data) {
-    auto* state = static_cast<UiState*>(data);
-    if (state->dpi_profile_count == 0) return;
-    const auto value = snapped_dpi(state, gtk_range_get_value(range));
-    if (std::abs(gtk_range_get_value(range) - value) > 0.1) {
-        gtk_range_set_value(range, value);
-        return;
-    }
-    state->dpi_values[state->dpi_selected_slot] = value;
-    gtk_button_set_label(state->dpi_slots[state->dpi_selected_slot], std::to_string(value).c_str());
-    set_text(state->dpi_selected_value, dpi_text(value));
-    gtk_widget_queue_draw(GTK_WIDGET(state->dpi_rail));
 }
 
 void dpi_level_clicked(GtkButton* button, gpointer data) {
@@ -751,30 +782,87 @@ void dpi_rail_draw(GtkDrawingArea*, cairo_t* cr, int width, int height, gpointer
     cairo_show_text(cr, maximum.c_str());
 }
 
-void dpi_rail_pressed(GtkGestureClick*, int, double x, double, gpointer data) {
-    auto* state = static_cast<UiState*>(data);
-    if (state->busy || state->dpi_profile_count == 0) return;
+double dpi_rail_value_at(UiState* state, double x) {
     const double width = gtk_widget_get_width(GTK_WIDGET(state->dpi_rail));
     const double left = 28;
     const double right = std::max(left, width - 28);
     const double ratio = std::clamp((x - left) / std::max(1.0, right - left), 0.0, 1.0);
-    const double target = state->dpi_min + ratio * (state->dpi_max - state->dpi_min);
-    std::size_t selected = 0;
-    double distance = std::abs(static_cast<double>(state->dpi_values[0]) - target);
-    for (std::size_t slot = 1; slot < state->dpi_profile_count; ++slot) {
-        const double candidate = std::abs(static_cast<double>(state->dpi_values[slot]) - target);
-        if (candidate < distance) {
-            selected = slot;
-            distance = candidate;
+    return state->dpi_min + ratio * (state->dpi_max - state->dpi_min);
+}
+
+std::size_t dpi_rail_hit_slot(UiState* state, double x) {
+    const double width = gtk_widget_get_width(GTK_WIDGET(state->dpi_rail));
+    const double left = 28;
+    const double right = std::max(left, width - 28);
+    const double range = state->dpi_max > state->dpi_min ? state->dpi_max - state->dpi_min : 1;
+    std::size_t hit = state->dpi_profile_count;
+    double distance = 18;
+    for (std::size_t slot = 0; slot < state->dpi_profile_count; ++slot) {
+        const double marker = left + std::clamp((static_cast<double>(state->dpi_values[slot]) - state->dpi_min) / range, 0.0, 1.0) * (right - left);
+        if (std::abs(marker - x) < distance) {
+            distance = std::abs(marker - x);
+            hit = slot;
         }
     }
-    select_dpi_slot(state, selected);
+    return hit;
+}
+
+void dpi_rail_remove_slot(UiState* state, std::size_t slot) {
+    if (state->dpi_profile_count <= 1 || slot >= state->dpi_profile_count) return;
+    for (std::size_t index = slot; index + 1 < state->dpi_profile_count; ++index) state->dpi_values[index] = state->dpi_values[index + 1];
+    --state->dpi_profile_count;
+    if (state->dpi_default_index == slot) state->dpi_default_index = 0;
+    else if (state->dpi_default_index > slot) --state->dpi_default_index;
+    if (state->dpi_shift_index == slot) state->dpi_shift_index = 0;
+    else if (state->dpi_shift_index > slot) --state->dpi_shift_index;
+    state->dpi_selected_slot = std::min(slot, static_cast<std::size_t>(state->dpi_profile_count - 1));
+    update_dpi_controls(state);
+}
+
+void dpi_rail_set_slot(UiState* state, std::size_t slot, double x) {
+    if (slot >= state->dpi_profile_count) return;
+    state->dpi_values[slot] = snapped_dpi(state, dpi_rail_value_at(state, x));
+    update_dpi_controls(state);
+}
+
+void dpi_rail_drag_begin(GtkGestureDrag*, double start_x, double, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (state->busy || !state->dpi_available) return;
+    state->dpi_dragging = true;
+    state->dpi_drag_start_x = start_x;
+    const std::size_t hit = dpi_rail_hit_slot(state, start_x);
+    if (hit < state->dpi_profile_count) {
+        state->dpi_drag_slot = hit;
+        select_dpi_slot(state, hit);
+    } else if (state->dpi_profile_count < state->dpi_values.size()) {
+        state->dpi_drag_slot = state->dpi_profile_count++;
+        state->dpi_values[state->dpi_drag_slot] = snapped_dpi(state, dpi_rail_value_at(state, start_x));
+        select_dpi_slot(state, state->dpi_drag_slot);
+    } else {
+        state->dpi_drag_slot = state->dpi_selected_slot;
+        dpi_rail_set_slot(state, state->dpi_drag_slot, start_x);
+    }
+}
+
+void dpi_rail_drag_update(GtkGestureDrag*, double offset_x, double, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (!state->dpi_dragging || state->busy) return;
+    dpi_rail_set_slot(state, state->dpi_drag_slot, state->dpi_drag_start_x + offset_x);
+}
+
+void dpi_rail_drag_end(GtkGestureDrag*, double offset_x, double offset_y, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (!state->dpi_dragging) return;
+    const double height = gtk_widget_get_height(GTK_WIDGET(state->dpi_rail));
+    if (std::abs(offset_y) > std::max(28.0, height * 0.42) && state->dpi_profile_count > 1) dpi_rail_remove_slot(state, state->dpi_drag_slot);
+    else dpi_rail_set_slot(state, state->dpi_drag_slot, state->dpi_drag_start_x + offset_x);
+    state->dpi_dragging = false;
 }
 
 void dpi_live_clicked(GtkButton*, gpointer data) {
     auto* state = static_cast<UiState*>(data);
-    const auto dpi = snapped_dpi(state, gtk_range_get_value(GTK_RANGE(state->dpi_live_scale)));
-    start_dpi_operation(state, {DpiOperationKind::Live, state->dpi_sensor_index, 0, dpi}, "Applying live DPI");
+    if (state->dpi_profile_count == 0) return;
+    start_dpi_operation(state, {DpiOperationKind::Live, state->dpi_sensor_index, 0, state->dpi_values[state->dpi_selected_slot]}, "Applying live DPI");
 }
 
 void dpi_profile_apply_clicked(GtkButton*, gpointer data) {
@@ -790,12 +878,100 @@ void dpi_profile_default_clicked(GtkButton*, gpointer data) {
     start_dpi_operation(state, {DpiOperationKind::Default, 0, static_cast<std::uint8_t>(state->dpi_selected_slot), 0}, "Setting default DPI");
 }
 
+void mapping_button_clicked(GtkButton* button, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    const auto selected = static_cast<std::uint8_t>(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "mapping-button")));
+    if (selected == 0) return;
+    state->mapping_selected_button = selected;
+    if (state->mapping_selected != nullptr) set_text(state->mapping_selected, "Button " + std::to_string(selected) + " selected");
+    for (GtkWidget* hotspot : state->mapping_hotspots) if (hotspot != nullptr) gtk_widget_remove_css_class(hotspot, "selected");
+    gtk_widget_add_css_class(GTK_WIDGET(button), "selected");
+    if (state->mapping_views != nullptr) gtk_stack_set_visible_child_name(state->mapping_views, selected == 6 ? "bottom" : "front");
+}
+
+std::array<std::uint8_t, 4> mapping_spec(int command) {
+    switch (command) {
+    case 1: return {0x80, 0x01, 0x00, 0x01};
+    case 2: return {0x80, 0x01, 0x00, 0x02};
+    case 3: return {0x80, 0x01, 0x00, 0x04};
+    case 4: return {0x80, 0x01, 0x00, 0x08};
+    case 5: return {0x80, 0x01, 0x00, 0x10};
+    case 6: return {0x90, 0x05, 0x00, 0x00};
+    case 7: return {0x80, 0x02, 0x00, 0x68};
+    default: return {};
+    }
+}
+
+void destroy_mapping_operation(gpointer data) {
+    delete static_cast<MappingOperation*>(data);
+}
+
+void mapping_operation_complete(GObject* source, GAsyncResult* async_result, gpointer) {
+    auto* state = static_cast<UiState*>(g_object_get_data(source, "logipro-state"));
+    if (state == nullptr) return;
+    const int result = g_task_propagate_int(G_TASK(async_result), nullptr);
+    if (result != LOGIPRO_OK) {
+        set_busy(state, false);
+        set_status(state, "Assignment update failed", "status-error");
+        return;
+    }
+    start_snapshot_read(state);
+}
+
+void start_mapping_operation(UiState* state, const MappingOperation& operation) {
+    if (state->busy || state->mapping_selected_button == 0) return;
+    set_busy(state, true);
+    set_status(state, "Saving button assignment", "status-neutral");
+    GTask* task = g_task_new(G_OBJECT(state->window), nullptr, mapping_operation_complete, nullptr);
+    g_task_set_task_data(task, new MappingOperation(operation), destroy_mapping_operation);
+    g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer task_data, GCancellable*) {
+        const auto& operation = *static_cast<MappingOperation*>(task_data);
+        g_task_return_int(task, logipro_profile_bind(operation.button, operation.spec.data()));
+    });
+    g_object_unref(task);
+}
+
+void mapping_command_clicked(GtkButton* button, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    const int command = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "mapping-command"));
+    start_mapping_operation(state, {state->mapping_selected_button, mapping_spec(command)});
+}
+
+void mapping_category_clicked(GtkButton* button, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (state->mapping_categories == nullptr) return;
+    GtkWidget* child = gtk_widget_get_first_child(state->mapping_categories);
+    while (child != nullptr) {
+        gtk_widget_remove_css_class(child, "selected");
+        child = gtk_widget_get_next_sibling(child);
+    }
+    gtk_widget_add_css_class(GTK_WIDGET(button), "selected");
+}
+
+GtkWidget* mapping_hotspot(GtkWidget* overlay, UiState* state, std::uint8_t button, const char* name, GtkAlign horizontal, GtkAlign vertical, int top, int start, int end) {
+    GtkButton* hotspot = GTK_BUTTON(gtk_button_new());
+    gtk_widget_add_css_class(GTK_WIDGET(hotspot), "mapping-hotspot");
+    gtk_widget_set_can_focus(GTK_WIDGET(hotspot), FALSE);
+    gtk_widget_set_size_request(GTK_WIDGET(hotspot), 20, 20);
+    gtk_widget_set_tooltip_text(GTK_WIDGET(hotspot), name);
+    gtk_widget_set_halign(GTK_WIDGET(hotspot), horizontal);
+    gtk_widget_set_valign(GTK_WIDGET(hotspot), vertical);
+    gtk_widget_set_margin_top(GTK_WIDGET(hotspot), top);
+    gtk_widget_set_margin_start(GTK_WIDGET(hotspot), start);
+    gtk_widget_set_margin_end(GTK_WIDGET(hotspot), end);
+    g_object_set_data(G_OBJECT(hotspot), "mapping-button", GINT_TO_POINTER(static_cast<int>(button)));
+    g_signal_connect(hotspot, "clicked", G_CALLBACK(mapping_button_clicked), state);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), GTK_WIDGET(hotspot));
+    if (button > 0 && button <= state->mapping_hotspots.size()) state->mapping_hotspots[button - 1] = GTK_WIDGET(hotspot);
+    return GTK_WIDGET(hotspot);
+}
+
 void install_css() {
     static constexpr const char css[] =
         "* { font-family: 'Segoe UI', sans-serif; }"
         "window { background: #0b0d10; color: #f3f6fb; }"
         "headerbar { background: #0b0d10; border-bottom: 1px solid #252932; box-shadow: none; min-height: 52px; padding: 0 10px; }"
-        ".page { padding: 12px 18px 16px; }"
+        ".page { padding: 10px 18px 12px; }"
         ".status-row { background: #151a20; border: 1px solid #252c35; border-radius: 10px; padding: 8px 12px; }"
         ".app-title { color: #f5f7fb; font-size: 19px; font-weight: 800; }"
         ".app-subtitle { color: #747d8d; font-size: 11px; }"
@@ -803,10 +979,10 @@ void install_css() {
         ".section-caption { color: #7f8898; font-size: 12px; }"
         ".card { background: #191c21; border: 1px solid #2a2e36; border-radius: 14px; }"
         ".card > border { border-radius: 14px; }"
-        ".card-content { padding: 14px; }"
+        ".card-content { padding: 12px; }"
         ".muted { color: #818a9a; }"
         ".value { color: #eef2f8; font-weight: 600; }"
-        ".status-neutral, .status-good, .status-warning, .status-error { padding: 7px 12px; border-radius: 999px; font-weight: 700; }"
+        ".status-neutral, .status-good, .status-warning, .status-error { padding: 4px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }"
         ".status-neutral { background: #20252d; color: #aeb7c5; }"
         ".status-good { background: #123324; color: #73e5a3; }"
         ".status-warning { background: #3b2b12; color: #ffc85c; }"
@@ -826,15 +1002,12 @@ void install_css() {
         ".binding-tile { background: #20242b; border: 1px solid #303640; border-radius: 10px; padding: 12px; }"
         ".binding-number { color: #7f8999; font-size: 10px; font-weight: 800; }"
         ".binding-value { color: #f1f4f8; font-weight: 600; }"
-        ".dpi-chip { min-width: 72px; min-height: 34px; background: #20242b; border: 1px solid #343a45; font-size: 14px; font-weight: 700; }"
+        ".dpi-chip { min-width: 54px; min-height: 25px; background: #20242b; border: 1px solid #343a45; border-radius: 5px; padding: 2px 7px; font-size: 12px; font-weight: 700; }"
         ".dpi-chip:hover { background: #2a3039; }"
         ".dpi-chip.selected { background: #148fdf; border-color: #48b9ff; color: #ffffff; }"
         ".dpi-value { color: #f5f7fb; font-size: 23px; font-weight: 800; }"
         ".dpi-caption { color: #7f8999; font-size: 11px; font-weight: 700; letter-spacing: 0.4px; }"
         ".dpi-selected { color: #2eaeff; font-size: 17px; font-weight: 800; }"
-        ".dpi-scale trough { background: #2b3038; min-height: 8px; border-radius: 999px; }"
-        ".dpi-scale highlight { background: #1599ed; min-height: 8px; border-radius: 999px; }"
-        ".dpi-scale slider { background: #f3f7fb; border: 3px solid #1599ed; min-width: 18px; min-height: 18px; }"
         ".lighting-tab { background: transparent; border: none; box-shadow: none; color: #8992a1; padding: 3px 0; min-height: 24px; border-radius: 0; }"
         ".lighting-tab.selected { color: #f2f6fb; border-bottom: 2px solid #2eaeff; }"
         ".lighting-caption { color: #8993a2; font-size: 12px; }"
@@ -845,8 +1018,14 @@ void install_css() {
         ".lighting-scale highlight { background: #1599ed; min-height: 8px; border-radius: 999px; }"
         ".lighting-scale slider { background: #f3f7fb; border: 3px solid #1599ed; min-width: 18px; min-height: 18px; }"
         ".mouse-picture { padding: 6px; }"
-        ".hotspot { background: #20252c; border: 1px solid #3a424e; color: #eaf1f8; font-size: 11px; padding: 6px 9px; }"
-        ".hotspot:hover { background: #168fdf; border-color: #49baff; }"
+        ".mapping-hotspot { background: #f0f4f8; border: 2px solid #8792a2; border-radius: 999px; min-width: 18px; min-height: 18px; padding: 0; }"
+        ".mapping-hotspot:hover, .mapping-hotspot.selected { background: #1599ed; border-color: #d9f2ff; }"
+        ".mapping-category { background: transparent; border: none; box-shadow: none; color: #8992a1; border-radius: 0; padding: 2px 5px; min-height: 24px; }"
+        ".mapping-category:hover, .mapping-category.selected { color: #f2f6fb; border-bottom: 2px solid #2eaeff; }"
+        ".command-button { min-height: 28px; padding: 3px 8px; text-align: left; }"
+        ".view-switcher { background: transparent; }"
+        ".view-switcher button { background: transparent; border: none; box-shadow: none; color: #aab3c0; border-radius: 999px; min-height: 24px; padding: 2px 10px; }"
+        ".view-switcher button:checked { background: #f3f6fa; color: #12161b; }"
         ".hero { background: #000000; border: 1px solid #2d3540; border-radius: 14px; padding: 12px 16px; }"
         ".hero-title { color: #f5f7fb; font-size: 23px; font-weight: 800; }"
         ".hero-caption { color: #8993a2; font-size: 12px; }"
@@ -872,19 +1051,6 @@ GtkWidget* mouse_picture(int width, int height) {
     return picture;
 }
 
-GtkWidget* mouse_hotspot(GtkWidget* overlay, const char* text, GtkAlign horizontal, GtkAlign vertical, int top, int start, int end) {
-    GtkWidget* button = gtk_button_new_with_label(text);
-    gtk_widget_add_css_class(button, "hotspot");
-    gtk_widget_set_can_focus(button, FALSE);
-    gtk_widget_set_halign(button, horizontal);
-    gtk_widget_set_valign(button, vertical);
-    gtk_widget_set_margin_top(button, top);
-    gtk_widget_set_margin_start(button, start);
-    gtk_widget_set_margin_end(button, end);
-    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), button);
-    return button;
-}
-
 void activate(GtkApplication* application, gpointer) {
     install_css();
     GtkWindow* window = GTK_WINDOW(gtk_application_window_new(application));
@@ -902,16 +1068,17 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_valign(status_pill, GTK_ALIGN_CENTER);
     gtk_widget_set_margin_end(status_pill, 8);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), status_pill);
-    GtkWidget* refresh = gtk_button_new_with_label("Refresh");
-    gtk_widget_add_css_class(refresh, "suggested-action");
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), refresh);
     gtk_window_set_titlebar(window, header);
 
     auto* state = new UiState();
-    g_object_set_data_full(G_OBJECT(window), "logipro-state", state, [](gpointer value) { delete static_cast<UiState*>(value); });
+    g_object_set_data_full(G_OBJECT(window), "logipro-state", state, [](gpointer value) {
+        auto* state = static_cast<UiState*>(value);
+        if (state->refresh_source != 0) g_source_remove(state->refresh_source);
+        if (state->lighting_animation_source != 0) g_source_remove(state->lighting_animation_source);
+        delete state;
+    });
     state->status = GTK_LABEL(status_pill);
     state->window = window;
-    state->refresh = GTK_BUTTON(refresh);
 
     GtkWidget* page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_widget_add_css_class(page, "page");
@@ -958,59 +1125,38 @@ void activate(GtkApplication* application, gpointer) {
     GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     state->sensitivity_box = sensitivity_box;
-    GtkWidget* dpi_info_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(dpi_info_grid), 10);
-    gtk_grid_set_column_spacing(GTK_GRID(dpi_info_grid), 24);
-    state->dpi_current = info_row(GTK_GRID(dpi_info_grid), 0, "Current DPI");
-    state->dpi_range = info_row(GTK_GRID(dpi_info_grid), 1, "Sensor range");
-    state->dpi_profile_state = info_row(GTK_GRID(dpi_info_grid), 2, "Onboard levels");
-    gtk_box_append(GTK_BOX(sensitivity_box), card("Sensitivity (DPI)", "Tune the live sensor and the five values stored in onboard memory.", dpi_info_grid));
-
     GtkWidget* dpi_columns = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(dpi_columns), 17);
-    gtk_grid_set_column_homogeneous(GTK_GRID(dpi_columns), FALSE);
+    gtk_grid_set_column_homogeneous(GTK_GRID(dpi_columns), TRUE);
 
-    GtkWidget* levels_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 13);
-    gtk_box_append(GTK_BOX(levels_box), label("DPI SPEEDS", "dpi-caption"));
-    GtkWidget* level_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(level_grid), 9);
-    gtk_grid_set_column_spacing(GTK_GRID(level_grid), 9);
-    for (std::size_t slot = 0; slot < state->dpi_slots.size(); ++slot) {
-        state->dpi_slots[slot] = GTK_BUTTON(gtk_button_new_with_label("—"));
-        gtk_widget_add_css_class(GTK_WIDGET(state->dpi_slots[slot]), "dpi-chip");
-        g_object_set_data(G_OBJECT(state->dpi_slots[slot]), "dpi-slot", GINT_TO_POINTER(static_cast<int>(slot)));
-        g_signal_connect(state->dpi_slots[slot], "clicked", G_CALLBACK(dpi_level_clicked), state);
-        gtk_grid_attach(GTK_GRID(level_grid), GTK_WIDGET(state->dpi_slots[slot]), static_cast<int>(slot % 2), static_cast<int>(slot / 2), 1, 1);
-    }
-    gtk_box_append(GTK_BOX(levels_box), level_grid);
-    gtk_box_append(GTK_BOX(levels_box), label("Click a level, then drag the rail to edit it.", "section-caption"));
-    GtkWidget* live_card_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 11);
+    GtkWidget* levels_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     GtkWidget* live_heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_box_append(GTK_BOX(live_heading), label("LIVE SENSOR", "dpi-caption"));
     state->dpi_live_value = GTK_LABEL(label("Unavailable", "dpi-value"));
     gtk_widget_set_hexpand(GTK_WIDGET(state->dpi_live_value), TRUE);
     gtk_label_set_xalign(state->dpi_live_value, 1.0f);
     gtk_box_append(GTK_BOX(live_heading), GTK_WIDGET(state->dpi_live_value));
-    gtk_box_append(GTK_BOX(live_card_box), live_heading);
-    state->dpi_live_scale = GTK_SCALE(gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 50, 25600, 50));
-    gtk_scale_set_draw_value(state->dpi_live_scale, FALSE);
-    gtk_widget_add_css_class(GTK_WIDGET(state->dpi_live_scale), "dpi-scale");
-    gtk_box_append(GTK_BOX(live_card_box), GTK_WIDGET(state->dpi_live_scale));
-    GtkWidget* live_limits = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_append(GTK_BOX(live_limits), label("100", "muted"));
-    GtkWidget* live_limit_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_hexpand(live_limit_spacer, TRUE);
-    gtk_box_append(GTK_BOX(live_limits), live_limit_spacer);
-    gtk_box_append(GTK_BOX(live_limits), label("25,600", "muted"));
-    gtk_box_append(GTK_BOX(live_card_box), live_limits);
-    state->dpi_live_apply = GTK_BUTTON(gtk_button_new_with_label("Apply live DPI"));
+    gtk_box_append(GTK_BOX(levels_box), live_heading);
+    GtkWidget* level_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(level_grid), 7);
+    gtk_grid_set_column_spacing(GTK_GRID(level_grid), 7);
+    for (std::size_t slot = 0; slot < state->dpi_slots.size(); ++slot) {
+        state->dpi_slots[slot] = GTK_BUTTON(gtk_button_new_with_label("—"));
+        gtk_widget_add_css_class(GTK_WIDGET(state->dpi_slots[slot]), "dpi-chip");
+        g_object_set_data(G_OBJECT(state->dpi_slots[slot]), "dpi-slot", GINT_TO_POINTER(static_cast<int>(slot)));
+        g_signal_connect(state->dpi_slots[slot], "clicked", G_CALLBACK(dpi_level_clicked), state);
+        gtk_grid_attach(GTK_GRID(level_grid), GTK_WIDGET(state->dpi_slots[slot]), static_cast<int>(slot % 3), static_cast<int>(slot / 3), 1, 1);
+    }
+    gtk_box_append(GTK_BOX(levels_box), label("DPI SPEEDS", "dpi-caption"));
+    gtk_box_append(GTK_BOX(levels_box), level_grid);
+    gtk_box_append(GTK_BOX(levels_box), label("Click a level, then drag its marker on the rail.", "section-caption"));
+    state->dpi_live_apply = GTK_BUTTON(gtk_button_new_with_label("Apply selected level"));
     gtk_widget_add_css_class(GTK_WIDGET(state->dpi_live_apply), "suggested-action");
     gtk_widget_set_halign(GTK_WIDGET(state->dpi_live_apply), GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(live_card_box), GTK_WIDGET(state->dpi_live_apply));
-    gtk_box_append(GTK_BOX(levels_box), card("Live sensor", "This changes the active sensor value immediately.", live_card_box));
-    gtk_grid_attach(GTK_GRID(dpi_columns), card("Pinned levels", "The mouse DPI button cycles these values.", levels_box), 0, 0, 1, 1);
+    gtk_box_append(GTK_BOX(levels_box), GTK_WIDGET(state->dpi_live_apply));
+    gtk_grid_attach(GTK_GRID(dpi_columns), card("DPI speeds", "The mouse DPI button cycles these stored values.", levels_box), 0, 0, 1, 1);
 
-    GtkWidget* rail_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 13);
+    GtkWidget* rail_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     GtkWidget* rail_heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_box_append(GTK_BOX(rail_heading), label("DPI SPEEDS", "dpi-caption"));
     gtk_widget_set_hexpand(rail_heading, TRUE);
@@ -1018,19 +1164,17 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(rail_box), rail_heading);
     state->dpi_rail = GTK_DRAWING_AREA(gtk_drawing_area_new());
     gtk_widget_set_hexpand(GTK_WIDGET(state->dpi_rail), TRUE);
-    gtk_widget_set_size_request(GTK_WIDGET(state->dpi_rail), 440, 100);
+    gtk_widget_set_size_request(GTK_WIDGET(state->dpi_rail), 440, 112);
     gtk_drawing_area_set_draw_func(state->dpi_rail, dpi_rail_draw, state, nullptr);
-    GtkGestureClick* rail_gesture = GTK_GESTURE_CLICK(gtk_gesture_click_new());
+    GtkGestureDrag* rail_gesture = GTK_GESTURE_DRAG(gtk_gesture_drag_new());
     gtk_widget_add_controller(GTK_WIDGET(state->dpi_rail), GTK_EVENT_CONTROLLER(rail_gesture));
-    g_signal_connect(rail_gesture, "pressed", G_CALLBACK(dpi_rail_pressed), state);
+    g_signal_connect(rail_gesture, "drag-begin", G_CALLBACK(dpi_rail_drag_begin), state);
+    g_signal_connect(rail_gesture, "drag-update", G_CALLBACK(dpi_rail_drag_update), state);
+    g_signal_connect(rail_gesture, "drag-end", G_CALLBACK(dpi_rail_drag_end), state);
     gtk_box_append(GTK_BOX(rail_box), GTK_WIDGET(state->dpi_rail));
-    state->dpi_profile_scale = GTK_SCALE(gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 50, 25600, 50));
-    gtk_scale_set_draw_value(state->dpi_profile_scale, FALSE);
-    gtk_widget_add_css_class(GTK_WIDGET(state->dpi_profile_scale), "dpi-scale");
-    gtk_box_append(GTK_BOX(rail_box), label("Drag to set the selected level", "section-caption"));
-    gtk_box_append(GTK_BOX(rail_box), GTK_WIDGET(state->dpi_profile_scale));
-    GtkWidget* selected_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    GtkWidget* selected_copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    gtk_box_append(GTK_BOX(rail_box), label("Click the rail to add a level • drag a marker to move it • drag off the rail to remove it.", "section-caption"));
+    GtkWidget* selected_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget* selected_copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_append(GTK_BOX(selected_copy), label("SELECTED LEVEL", "dpi-caption"));
     state->dpi_selected_value = GTK_LABEL(label("Unavailable", "dpi-selected"));
     state->dpi_selected_detail = GTK_LABEL(label("No onboard DPI levels reported", "section-caption"));
@@ -1043,7 +1187,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(selected_row), GTK_WIDGET(state->dpi_profile_save));
     gtk_box_append(GTK_BOX(selected_row), GTK_WIDGET(state->dpi_profile_default));
     gtk_box_append(GTK_BOX(rail_box), selected_row);
-    gtk_grid_attach(GTK_GRID(dpi_columns), card("DPI speeds", "Choose a stored level or place it precisely on the rail.", rail_box), 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(dpi_columns), card("DPI rail", "Place and edit the pinned speeds directly on one scale.", rail_box), 1, 0, 1, 1);
     gtk_box_append(GTK_BOX(sensitivity_box), dpi_columns);
     gtk_box_append(GTK_BOX(sensitivity_page), sensitivity_box);
 
@@ -1138,8 +1282,15 @@ void activate(GtkApplication* application, gpointer) {
     gtk_label_set_xalign(state->lighting_battery, 1.0f);
     gtk_box_append(GTK_BOX(battery_row), GTK_WIDGET(state->lighting_battery));
     gtk_box_append(GTK_BOX(lighting_visual), battery_row);
-    GtkWidget* lighting_picture = mouse_picture(300, 340);
-    gtk_box_append(GTK_BOX(lighting_visual), lighting_picture);
+    GtkWidget* lighting_preview_overlay = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(lighting_preview_overlay), mouse_picture(300, 340));
+    state->lighting_preview = GTK_DRAWING_AREA(gtk_drawing_area_new());
+    gtk_widget_set_size_request(GTK_WIDGET(state->lighting_preview), 300, 340);
+    gtk_widget_set_halign(GTK_WIDGET(state->lighting_preview), GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(GTK_WIDGET(state->lighting_preview), GTK_ALIGN_CENTER);
+    gtk_drawing_area_set_draw_func(state->lighting_preview, lighting_preview_draw, state, nullptr);
+    gtk_overlay_add_overlay(GTK_OVERLAY(lighting_preview_overlay), GTK_WIDGET(state->lighting_preview));
+    gtk_box_append(GTK_BOX(lighting_visual), lighting_preview_overlay);
     GtkWidget* lighting_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(lighting_grid), 8);
     gtk_grid_set_column_spacing(GTK_GRID(lighting_grid), 20);
@@ -1151,29 +1302,83 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(lighting_page), lighting_columns);
 
     GtkWidget* mapping_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    GtkWidget* mouse_visual = gtk_overlay_new();
-    gtk_overlay_set_child(GTK_OVERLAY(mouse_visual), mouse_picture(340, 430));
-    mouse_hotspot(mouse_visual, "Primary", GTK_ALIGN_START, GTK_ALIGN_START, 100, 0, 0);
-    mouse_hotspot(mouse_visual, "Secondary", GTK_ALIGN_END, GTK_ALIGN_START, 100, 0, 0);
-    mouse_hotspot(mouse_visual, "Middle", GTK_ALIGN_CENTER, GTK_ALIGN_START, 68, 0, 0);
-    mouse_hotspot(mouse_visual, "Back", GTK_ALIGN_START, GTK_ALIGN_START, 224, 0, 0);
-    mouse_hotspot(mouse_visual, "Forward", GTK_ALIGN_START, GTK_ALIGN_START, 270, 0, 0);
-    mouse_hotspot(mouse_visual, "Back", GTK_ALIGN_END, GTK_ALIGN_START, 224, 0, 0);
-    mouse_hotspot(mouse_visual, "Forward", GTK_ALIGN_END, GTK_ALIGN_START, 270, 0, 0);
-    mouse_hotspot(mouse_visual, "DPI", GTK_ALIGN_CENTER, GTK_ALIGN_START, 350, 0, 0);
+    GtkWidget* mouse_views = gtk_stack_new();
+    state->mapping_views = GTK_STACK(mouse_views);
+    gtk_stack_set_transition_type(GTK_STACK(mouse_views), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    GtkWidget* front_mouse = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(front_mouse), mouse_picture(340, 430));
+    mapping_hotspot(front_mouse, state, 1, "Primary click", GTK_ALIGN_START, GTK_ALIGN_START, 100, 44, 0);
+    mapping_hotspot(front_mouse, state, 2, "Secondary click", GTK_ALIGN_END, GTK_ALIGN_START, 100, 0, 44);
+    mapping_hotspot(front_mouse, state, 3, "Middle click", GTK_ALIGN_CENTER, GTK_ALIGN_START, 68, 0, 0);
+    mapping_hotspot(front_mouse, state, 4, "Back", GTK_ALIGN_START, GTK_ALIGN_START, 224, 54, 0);
+    mapping_hotspot(front_mouse, state, 5, "Forward", GTK_ALIGN_START, GTK_ALIGN_START, 270, 54, 0);
+    mapping_hotspot(front_mouse, state, 7, "Back", GTK_ALIGN_END, GTK_ALIGN_START, 224, 0, 54);
+    mapping_hotspot(front_mouse, state, 8, "Forward", GTK_ALIGN_END, GTK_ALIGN_START, 270, 0, 54);
+    gtk_stack_add_named(GTK_STACK(mouse_views), front_mouse, "front");
+    GtkWidget* bottom_mouse = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(bottom_mouse), mouse_picture(340, 430));
+    GtkWidget* bottom_label = label("UNDERSIDE VIEW", "section-caption");
+    gtk_widget_set_halign(bottom_label, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(bottom_label, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(bottom_label, 34);
+    gtk_overlay_add_overlay(GTK_OVERLAY(bottom_mouse), bottom_label);
+    mapping_hotspot(bottom_mouse, state, 6, "DPI cycle", GTK_ALIGN_CENTER, GTK_ALIGN_START, 205, 0, 0);
+    gtk_stack_add_named(GTK_STACK(mouse_views), bottom_mouse, "bottom");
+    GtkWidget* mouse_view_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_box_append(GTK_BOX(mouse_view_box), mouse_views);
+    GtkWidget* view_switcher = gtk_stack_switcher_new();
+    gtk_stack_switcher_set_stack(GTK_STACK_SWITCHER(view_switcher), GTK_STACK(mouse_views));
+    gtk_widget_add_css_class(view_switcher, "view-switcher");
+    gtk_widget_set_halign(view_switcher, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(mouse_view_box), view_switcher);
+
     GtkWidget* buttons_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(buttons_grid), 10);
-    gtk_grid_set_column_spacing(GTK_GRID(buttons_grid), 10);
+    gtk_grid_set_row_spacing(GTK_GRID(buttons_grid), 7);
+    gtk_grid_set_column_spacing(GTK_GRID(buttons_grid), 7);
     state->buttons_grid = GTK_GRID(buttons_grid);
+    GtkWidget* mapping_editor = gtk_box_new(GTK_ORIENTATION_VERTICAL, 9);
+    state->mapping_palette = mapping_editor;
+    GtkWidget* mapping_heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(mapping_heading), label("ONBOARD ASSIGNMENTS", "section-title"));
+    state->mapping_selected = GTK_LABEL(label("Button 1 selected", "section-caption"));
+    gtk_widget_set_hexpand(GTK_WIDGET(state->mapping_selected), TRUE);
+    gtk_label_set_xalign(state->mapping_selected, 1.0f);
+    gtk_box_append(GTK_BOX(mapping_heading), GTK_WIDGET(state->mapping_selected));
+    gtk_box_append(GTK_BOX(mapping_editor), mapping_heading);
+    gtk_box_append(GTK_BOX(mapping_editor), buttons_grid);
+    state->mapping_categories = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    const std::array<const char*, 6> categories = {"COMMANDS", "KEYS", "ACTIONS", "MACROS", "SYSTEM", "PRESETS"};
+    for (std::size_t index = 0; index < categories.size(); ++index) {
+        GtkButton* category = GTK_BUTTON(gtk_button_new_with_label(categories[index]));
+        gtk_widget_add_css_class(GTK_WIDGET(category), "mapping-category");
+        if (index == 0) gtk_widget_add_css_class(GTK_WIDGET(category), "selected");
+        gtk_box_append(GTK_BOX(state->mapping_categories), GTK_WIDGET(category));
+        g_signal_connect(category, "clicked", G_CALLBACK(mapping_category_clicked), state);
+    }
+    gtk_box_append(GTK_BOX(mapping_editor), state->mapping_categories);
+    gtk_box_append(GTK_BOX(mapping_editor), label("Choose a command and assign it to the selected control.", "section-caption"));
+    GtkWidget* command_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(command_grid), 5);
+    gtk_grid_set_column_spacing(GTK_GRID(command_grid), 5);
+    const std::array<const char*, 7> commands = {"Primary click", "Secondary click", "Middle click", "Back", "Forward", "DPI cycle", "F13"};
+    for (std::size_t index = 0; index < commands.size(); ++index) {
+        GtkButton* command = GTK_BUTTON(gtk_button_new_with_label(commands[index]));
+        gtk_widget_add_css_class(GTK_WIDGET(command), "command-button");
+        g_object_set_data(G_OBJECT(command), "mapping-command", GINT_TO_POINTER(static_cast<int>(index + 1)));
+        g_signal_connect(command, "clicked", G_CALLBACK(mapping_command_clicked), state);
+        gtk_grid_attach(GTK_GRID(command_grid), GTK_WIDGET(command), static_cast<int>(index % 2), static_cast<int>(index / 2), 1, 1);
+    }
+    gtk_box_append(GTK_BOX(mapping_editor), command_grid);
     GtkWidget* mapping_columns = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(mapping_columns), 17);
-    gtk_grid_attach(GTK_GRID(mapping_columns), card("Mouse layout", "The physical controls exposed by the active profile.", mouse_visual), 0, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(mapping_columns), card("Onboard assignments", "Assignments currently stored in the active profile.", buttons_grid), 1, 0, 1, 1);
+    gtk_grid_set_column_homogeneous(GTK_GRID(mapping_columns), FALSE);
+    gtk_grid_attach(GTK_GRID(mapping_columns), card("Mouse layout", "Click a control to edit it. View 2 exposes the underside DPI button.", mouse_view_box), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(mapping_columns), card("Onboard assignments", "Commands are written to the active onboard profile.", mapping_editor), 1, 0, 1, 1);
     gtk_box_append(GTK_BOX(mapping_page), mapping_columns);
 
     GtkWidget* stack = gtk_stack_new();
     gtk_stack_set_transition_type(GTK_STACK(stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
-    gtk_widget_set_vexpand(stack, TRUE);
+    gtk_widget_set_valign(stack, GTK_ALIGN_START);
     gtk_stack_add_titled(GTK_STACK(stack), overview_page, "overview", "Overview");
     gtk_stack_add_titled(GTK_STACK(stack), sensitivity_page, "sensitivity", "Sensitivity");
     gtk_stack_add_titled(GTK_STACK(stack), lighting_page, "lighting", "Lighting");
@@ -1186,21 +1391,28 @@ void activate(GtkApplication* application, gpointer) {
 
     GtkWidget* scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll), TRUE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), page);
     gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_valign(page, GTK_ALIGN_START);
+    gtk_widget_set_vexpand(page, FALSE);
     gtk_window_set_child(window, scroll);
-    g_signal_connect(refresh, "clicked", G_CALLBACK(refresh_clicked), state);
     g_signal_connect(state->lighting_off, "clicked", G_CALLBACK(lighting_off_clicked), state);
     g_signal_connect(state->lighting_sync, "clicked", G_CALLBACK(lighting_sync_clicked), state);
     g_signal_connect(state->lighting_windows, "state-set", G_CALLBACK(lighting_windows_changed), state);
+    g_signal_connect(state->lighting_effect, "notify::selected", G_CALLBACK(lighting_effect_changed), state);
     g_signal_connect(state->lighting_rate, "value-changed", G_CALLBACK(lighting_rate_changed), state);
     g_signal_connect(state->lighting_brightness, "value-changed", G_CALLBACK(lighting_brightness_changed), state);
     g_signal_connect(state->dpi_live_apply, "clicked", G_CALLBACK(dpi_live_clicked), state);
-    g_signal_connect(state->dpi_live_scale, "value-changed", G_CALLBACK(dpi_live_scale_changed), state);
-    g_signal_connect(state->dpi_profile_scale, "value-changed", G_CALLBACK(dpi_profile_scale_changed), state);
     g_signal_connect(state->dpi_profile_save, "clicked", G_CALLBACK(dpi_profile_apply_clicked), state);
     g_signal_connect(state->dpi_profile_default, "clicked", G_CALLBACK(dpi_profile_default_clicked), state);
     start_snapshot_read(state);
+    state->refresh_source = g_timeout_add_seconds(5, [](gpointer data) -> gboolean {
+        auto* state = static_cast<UiState*>(data);
+        if (!state->busy) start_snapshot_read(state);
+        return G_SOURCE_CONTINUE;
+    }, state);
+    state->lighting_animation_source = g_timeout_add(33, lighting_animation_tick, state);
     gtk_window_present(window);
 }
 

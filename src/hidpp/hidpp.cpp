@@ -275,7 +275,7 @@ std::optional<logipro::HidppLightingInfo> read_lighting_state(HANDLE handle, con
     for (std::uint8_t zone = 0; zone < result.zone_count; ++zone) {
         logipro::HidppLightingZoneInfo state;
         state.requested_zone = zone;
-        const auto zone_info = call(handle, device, device_index, feature_index, 0x10, {zone, 0xff, 0x00});
+        const auto zone_info = call(handle, device, device_index, feature_index, 0x10, {zone, 0x00, 0x00});
         if (zone_info && zone_info->size() >= 4) {
             state.zone_info_readable = true;
             state.info_zone = zone_info->at(0);
@@ -453,9 +453,7 @@ bool restore_lighting_state(HANDLE handle, const logipro::HidDeviceInfo& device,
 
 bool set_lighting_effect_state(HANDLE handle, const logipro::HidDeviceInfo& device, std::uint8_t device_index, const logipro::HidppLightingInfo& lighting, std::uint16_t effect_id, std::uint16_t period_ms, std::uint8_t brightness) {
     if (!lighting.readable || !lighting.software_control_readable || lighting.zones.size() != lighting.zone_count) return false;
-    for (const auto& zone : lighting.zones) {
-        if (std::find(zone.effect_ids.begin(), zone.effect_ids.end(), effect_id) == zone.effect_ids.end()) return false;
-    }
+    for (const auto& zone : lighting.zones) if (std::find(zone.effect_ids.begin(), zone.effect_ids.end(), effect_id) == zone.effect_ids.end()) return false;
     if (!call(handle, device, device_index, lighting.feature_index, 0x80, {0x01, lighting.sync_events, 0x00})) return false;
     bool success = true;
     const auto period = static_cast<std::uint16_t>(std::clamp<unsigned int>(period_ms, 100, 60000));
@@ -463,7 +461,7 @@ bool set_lighting_effect_state(HANDLE handle, const logipro::HidDeviceInfo& devi
     for (const auto& zone : lighting.zones) {
         std::vector<std::uint8_t> parameters(13);
         parameters[0] = zone.requested_zone;
-        parameters[1] = static_cast<std::uint8_t>(effect_id);
+        parameters[1] = static_cast<std::uint8_t>(std::distance(zone.effect_ids.begin(), std::find(zone.effect_ids.begin(), zone.effect_ids.end(), effect_id)));
         if (effect_id == 1 || effect_id == 10 || effect_id == 11) {
             parameters[2] = 0xff;
             parameters[3] = 0x80;
