@@ -1,0 +1,5 @@
+#include <windows.h>
+
+#define IDI_LOGIPRO 101
+
+IDI_LOGIPRO ICON "assets/logitech-g.ico"

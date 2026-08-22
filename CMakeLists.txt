@@ -71,14 +71,19 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/resources.gresource.xml"
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-real.png"
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-hero.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/logitech-g.png"
     VERBATIM
 )
 add_executable(logipro WIN32
     gui/main.cpp
     gui/entry.cpp
+    gui/tray.cpp
     src/cli/app.cpp
     "${LOGIPRO_GUI_RESOURCE_SOURCE}"
 )
+if(WIN32)
+    target_sources(logipro PRIVATE gui/logipro.rc)
+endif()
 target_link_libraries(logipro PRIVATE logipro_core PkgConfig::GTK4)
 if(WIN32)
     target_link_libraries(logipro PRIVATE shell32)

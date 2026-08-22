@@ -3,5 +3,6 @@
   <gresource prefix="/com/morenoland/logipro">
     <file>assets/pro-wireless-real.png</file>
     <file>assets/pro-wireless-hero.png</file>
+    <file>assets/logitech-g.png</file>
   </gresource>
 </gresources>

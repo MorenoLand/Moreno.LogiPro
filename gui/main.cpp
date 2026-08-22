@@ -1,5 +1,6 @@
 #include "logipro/api.h"
 #include "logipro/app.hpp"
+#include "tray.hpp"
 
 #include <gio/gio.h>
 #include <gtk/gtk.h>
@@ -1056,10 +1057,20 @@ void activate(GtkApplication* application, gpointer) {
     GtkWindow* window = GTK_WINDOW(gtk_application_window_new(application));
     gtk_window_set_title(window, "LogiPro");
     gtk_window_set_default_size(window, 1080, 720);
+    gtk_window_set_resizable(window, FALSE);
     GtkWidget* header = gtk_header_bar_new();
-    GtkWidget* heading = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_append(GTK_BOX(heading), label("LogiPro", "app-title"));
-    gtk_box_append(GTK_BOX(heading), label("Open HID++ control for Logitech devices", "app-subtitle"));
+    GtkWidget* heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget* logo = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/logitech-g.png");
+    gtk_picture_set_content_fit(GTK_PICTURE(logo), GTK_CONTENT_FIT_CONTAIN);
+    gtk_picture_set_can_shrink(GTK_PICTURE(logo), TRUE);
+    gtk_widget_set_size_request(logo, 22, 22);
+    gtk_widget_set_valign(logo, GTK_ALIGN_CENTER);
+    gtk_widget_set_tooltip_text(logo, "Logitech");
+    gtk_box_append(GTK_BOX(heading), logo);
+    GtkWidget* heading_text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_append(GTK_BOX(heading_text), label("LogiPro", "app-title"));
+    gtk_box_append(GTK_BOX(heading_text), label("Open HID++ control for Logitech devices", "app-subtitle"));
+    gtk_box_append(GTK_BOX(heading), heading_text);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), heading);
     gtk_widget_set_margin_end(heading, 18);
     GtkWidget* title_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -1397,6 +1408,8 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_valign(page, GTK_ALIGN_START);
     gtk_widget_set_vexpand(page, FALSE);
     gtk_window_set_child(window, scroll);
+    logipro_tray_start(window, G_APPLICATION(application));
+    g_signal_connect(window, "close-request", G_CALLBACK(logipro_tray_close_request), nullptr);
     g_signal_connect(state->lighting_off, "clicked", G_CALLBACK(lighting_off_clicked), state);
     g_signal_connect(state->lighting_sync, "clicked", G_CALLBACK(lighting_sync_clicked), state);
     g_signal_connect(state->lighting_windows, "state-set", G_CALLBACK(lighting_windows_changed), state);
@@ -1443,6 +1456,7 @@ int logipro_app_main(int argc, char** argv) {
     if (cli) return logipro::run_cli(argc, argv);
     GtkApplication* application = gtk_application_new("com.morenoland.logipro", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(application, "activate", G_CALLBACK(activate), nullptr);
+    g_signal_connect(application, "shutdown", G_CALLBACK(+[](GApplication*, gpointer) { logipro_tray_stop(); }), nullptr);
     char app_name[] = "logipro";
     char* app_argv[] = {app_name, nullptr};
     const int status = g_application_run(G_APPLICATION(application), 1, app_argv);
