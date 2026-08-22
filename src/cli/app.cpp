@@ -170,6 +170,16 @@ void print_hidpp_devices() {
                 std::cout << "    zone request=" << static_cast<unsigned>(zone.requested_zone) << " info=" << static_cast<unsigned>(zone.info_zone)
                           << " location=0x" << std::hex << std::setw(4) << std::setfill('0') << zone.location << std::dec << " effects=" << static_cast<unsigned>(zone.effect_count)
                           << " effect=0x" << std::hex << std::setw(2) << static_cast<unsigned>(zone.effect) << std::dec << std::setfill(' ') << '\n';
+                if (zone.effect_count > 0) {
+                    std::cout << "      effect ids=";
+                    for (std::size_t effect_index = 0; effect_index < zone.effect_count; ++effect_index) {
+                        std::uint16_t effect_id = 0;
+                        if (logipro_snapshot_get_lighting_effect_id(snapshot.value, index, zone_index, effect_index, &effect_id) != LOGIPRO_OK) continue;
+                        if (effect_index != 0) std::cout << ',';
+                        std::cout << "0x" << std::hex << std::setw(2) << std::setfill('0') << effect_id;
+                    }
+                    std::cout << std::dec << std::setfill(' ') << '\n';
+                }
             }
         }
         std::cout << "    path: " << (device.path == nullptr ? "" : device.path) << '\n';

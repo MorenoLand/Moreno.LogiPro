@@ -48,6 +48,7 @@ struct UiState {
     GtkStack* mapping_views = nullptr;
     GtkWidget* mapping_palette = nullptr;
     GtkWidget* mapping_categories = nullptr;
+    GtkGrid* mapping_commands = nullptr;
     std::array<GtkWidget*, 8> mapping_hotspots{};
     GtkWindow* window = nullptr;
     GtkButton* lighting_off = nullptr;
@@ -90,11 +91,13 @@ struct UiState {
     bool lighting_controls_available = false;
     bool dpi_available = false;
     bool mapping_available = false;
+    bool has_snapshot = false;
 };
 
 struct SnapshotResult {
     int status = LOGIPRO_INTERNAL_ERROR;
     logipro_snapshot_t* snapshot = nullptr;
+    bool background = false;
 };
 
 enum class DpiOperationKind { Live, Profile, Default };
@@ -329,6 +332,7 @@ void select_dpi_slot(UiState* state, std::size_t slot) {
 }
 
 void reset_ui(UiState* state) {
+    state->has_snapshot = false;
     set_text(state->device_name, "No compatible Logitech device");
     set_text(state->connection, "Not detected");
     set_text(state->protocol, "—");
@@ -531,8 +535,10 @@ void apply_snapshot(UiState* state, const SnapshotResult& result) {
             gtk_grid_attach(state->buttons_grid, tile, (button - 1) % 2, (button - 1) / 2, 1, 1);
         }
     }
+    const bool was_connected = state->has_snapshot;
+    state->has_snapshot = true;
     set_busy(state, false);
-    set_status(state, "Connected", "status-good");
+    if (!result.background || !was_connected) set_status(state, "Connected", "status-good");
 }
 
 void destroy_snapshot_result(gpointer data) {
@@ -546,20 +552,32 @@ void snapshot_complete(GObject* source, GAsyncResult* async_result, gpointer) {
     if (state == nullptr) return;
     auto* result = static_cast<SnapshotResult*>(g_task_propagate_pointer(G_TASK(async_result), nullptr));
     if (result == nullptr) {
+        if (state->has_snapshot) {
+            set_busy(state, false);
+            set_status(state, "Connection lost", "status-warning");
+            return;
+        }
         reset_ui(state);
         set_busy(state, false);
         set_status(state, "Unable to read device", "status-error");
         return;
     }
+    if (result->status != LOGIPRO_OK && result->background && state->has_snapshot) {
+        set_busy(state, false);
+        set_status(state, "Connection lost", "status-warning");
+        return;
+    }
     apply_snapshot(state, *result);
 }
 
-void start_snapshot_read(UiState* state) {
+void start_snapshot_read(UiState* state, bool background = false) {
     set_busy(state, true);
-    set_status(state, "Reading device", "status-neutral");
+    if (!background || !state->has_snapshot) set_status(state, "Reading device", "status-neutral");
     GTask* task = g_task_new(G_OBJECT(state->window), nullptr, snapshot_complete, nullptr);
+    g_object_set_data(G_OBJECT(task), "background", GINT_TO_POINTER(background ? 1 : 0));
     g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer, GCancellable*) {
         auto* result = new SnapshotResult();
+        result->background = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(task), "background")) != 0;
         result->status = logipro_snapshot_create(&result->snapshot);
         g_task_return_pointer(task, result, destroy_snapshot_result);
     });
@@ -899,6 +917,9 @@ std::array<std::uint8_t, 4> mapping_spec(int command) {
     case 5: return {0x80, 0x01, 0x00, 0x10};
     case 6: return {0x90, 0x05, 0x00, 0x00};
     case 7: return {0x80, 0x02, 0x00, 0x68};
+    case 8: return {0x80, 0x02, 0x00, 0x69};
+    case 9: return {0x80, 0x02, 0x00, 0x6a};
+    case 10: return {0x80, 0x02, 0x00, 0x6b};
     default: return {};
     }
 }
@@ -938,6 +959,49 @@ void mapping_command_clicked(GtkButton* button, gpointer data) {
     start_mapping_operation(state, {state->mapping_selected_button, mapping_spec(command)});
 }
 
+GdkContentProvider* mapping_command_prepare(GtkDragSource* source, double, double, gpointer);
+
+void mapping_command_prepare_drag(GtkWidget* command, UiState* state) {
+    const int command_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(command), "mapping-command"));
+    GtkDragSource* drag_source = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag_source, GDK_ACTION_COPY);
+    g_signal_connect(drag_source, "prepare", G_CALLBACK(mapping_command_prepare), state);
+    gtk_widget_add_controller(command, GTK_EVENT_CONTROLLER(drag_source));
+    g_object_set_data(G_OBJECT(command), "mapping-command", GINT_TO_POINTER(command_id));
+}
+
+GtkWidget* mapping_palette_button(UiState* state, int command_id, const char* text) {
+    GtkButton* command = GTK_BUTTON(gtk_button_new_with_label(text));
+    gtk_widget_add_css_class(GTK_WIDGET(command), "command-button");
+    g_object_set_data(G_OBJECT(command), "mapping-command", GINT_TO_POINTER(command_id));
+    g_signal_connect(command, "clicked", G_CALLBACK(mapping_command_clicked), state);
+    mapping_command_prepare_drag(GTK_WIDGET(command), state);
+    return GTK_WIDGET(command);
+}
+
+void populate_mapping_commands(UiState* state, int category) {
+    if (state->mapping_commands == nullptr) return;
+    GtkWidget* child = gtk_widget_get_first_child(GTK_WIDGET(state->mapping_commands));
+    while (child != nullptr) {
+        GtkWidget* next = gtk_widget_get_next_sibling(child);
+        gtk_grid_remove(state->mapping_commands, child);
+        child = next;
+    }
+    struct PaletteItem { int command; const char* name; };
+    const std::array<PaletteItem, 6> commands = {{{1, "Primary click"}, {2, "Secondary click"}, {3, "Middle click"}, {4, "Back"}, {5, "Forward"}, {6, "DPI cycle"}}};
+    const std::array<PaletteItem, 4> keys = {{{7, "F13"}, {8, "F14"}, {9, "F15"}, {10, "F16"}}};
+    const std::array<PaletteItem, 1> actions = {{{6, "DPI cycle"}}};
+    if (category == 0 || category == 1 || category == 2) {
+        const auto* items = category == 0 ? commands.data() : category == 1 ? keys.data() : actions.data();
+        const std::size_t count = category == 0 ? commands.size() : category == 1 ? keys.size() : actions.size();
+        for (std::size_t index = 0; index < count; ++index) gtk_grid_attach(state->mapping_commands, mapping_palette_button(state, items[index].command, items[index].name), static_cast<int>(index % 2), static_cast<int>(index / 2), 1, 1);
+    } else {
+        GtkWidget* empty = label(category == 3 ? "No macro actions are available from the current device profile." : category == 4 ? "No system actions are available from the current device profile." : "No presets are available from the current device profile.", "section-caption");
+        gtk_widget_set_margin_top(empty, 4);
+        gtk_grid_attach(state->mapping_commands, empty, 0, 0, 2, 1);
+    }
+}
+
 void mapping_category_clicked(GtkButton* button, gpointer data) {
     auto* state = static_cast<UiState*>(data);
     if (state->mapping_categories == nullptr) return;
@@ -947,6 +1011,26 @@ void mapping_category_clicked(GtkButton* button, gpointer data) {
         child = gtk_widget_get_next_sibling(child);
     }
     gtk_widget_add_css_class(GTK_WIDGET(button), "selected");
+    populate_mapping_commands(state, GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "mapping-category")));
+}
+
+gboolean mapping_hotspot_drop(GtkDropTarget* target, const GValue* value, double, double, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    if (value == nullptr || !G_VALUE_HOLDS_INT(value)) return FALSE;
+    const int command = g_value_get_int(value);
+    if (command < 1 || command > 10) return FALSE;
+    GtkWidget* widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(target));
+    if (widget == nullptr || !GTK_IS_BUTTON(widget)) return FALSE;
+    mapping_button_clicked(GTK_BUTTON(widget), state);
+    start_mapping_operation(state, {state->mapping_selected_button, mapping_spec(command)});
+    return TRUE;
+}
+
+GdkContentProvider* mapping_command_prepare(GtkDragSource* source, double, double, gpointer) {
+    GtkWidget* widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(source));
+    if (widget == nullptr) return nullptr;
+    const int command = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "mapping-command"));
+    return gdk_content_provider_new_typed(G_TYPE_INT, command);
 }
 
 GtkWidget* mapping_hotspot(GtkWidget* overlay, UiState* state, std::uint8_t button, const char* name, GtkAlign horizontal, GtkAlign vertical, int top, int start, int end) {
@@ -962,6 +1046,9 @@ GtkWidget* mapping_hotspot(GtkWidget* overlay, UiState* state, std::uint8_t butt
     gtk_widget_set_margin_end(GTK_WIDGET(hotspot), end);
     g_object_set_data(G_OBJECT(hotspot), "mapping-button", GINT_TO_POINTER(static_cast<int>(button)));
     g_signal_connect(hotspot, "clicked", G_CALLBACK(mapping_button_clicked), state);
+    GtkDropTarget* drop_target = gtk_drop_target_new(G_TYPE_INT, GDK_ACTION_COPY);
+    g_signal_connect(drop_target, "drop", G_CALLBACK(mapping_hotspot_drop), state);
+    gtk_widget_add_controller(GTK_WIDGET(hotspot), GTK_EVENT_CONTROLLER(drop_target));
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), GTK_WIDGET(hotspot));
     if (button > 0 && button <= state->mapping_hotspots.size()) state->mapping_hotspots[button - 1] = GTK_WIDGET(hotspot);
     return GTK_WIDGET(hotspot);
@@ -1012,7 +1099,7 @@ void install_css() {
         ".lighting-tab { background: transparent; border: none; box-shadow: none; color: #8992a1; padding: 3px 0; min-height: 24px; border-radius: 0; }"
         ".lighting-tab.selected { color: #f2f6fb; border-bottom: 2px solid #2eaeff; }"
         ".lighting-caption { color: #8993a2; font-size: 12px; }"
-        ".lighting-value { color: #f5f7fb; font-size: 18px; font-weight: 800; }"
+        ".lighting-value { color: #f5f7fb; font-size: 14px; font-weight: 700; }"
         ".lighting-note { color: #7f8999; font-size: 11px; }"
         ".lighting-dropdown, .lighting-dropdown > button { background: #20252c; color: #f2f6fb; border-color: #3a424e; min-height: 34px; }"
         ".lighting-scale trough { background: #2b3038; min-height: 8px; border-radius: 999px; }"
@@ -1063,7 +1150,7 @@ void activate(GtkApplication* application, gpointer) {
     GtkWidget* logo = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/logitech-g.png");
     gtk_picture_set_content_fit(GTK_PICTURE(logo), GTK_CONTENT_FIT_CONTAIN);
     gtk_picture_set_can_shrink(GTK_PICTURE(logo), TRUE);
-    gtk_widget_set_size_request(logo, 22, 22);
+    gtk_widget_set_size_request(logo, 16, 16);
     gtk_widget_set_valign(logo, GTK_ALIGN_CENTER);
     gtk_widget_set_tooltip_text(logo, "Logitech");
     gtk_box_append(GTK_BOX(heading), logo);
@@ -1105,7 +1192,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(hero_copy), label("A lightweight HID++ control surface for your mouse.", "hero-caption"));
     gtk_box_append(GTK_BOX(hero_copy), label("No vendor service required.", "hero-caption"));
     gtk_box_append(GTK_BOX(hero_top), hero_copy);
-    gtk_box_append(GTK_BOX(hero_top), mouse_picture(170, 286));
+    gtk_box_append(GTK_BOX(hero_top), mouse_picture(210, 250));
     gtk_box_append(GTK_BOX(hero), hero_top);
 
     GtkWidget* device_grid = gtk_grid_new();
@@ -1130,8 +1217,8 @@ void activate(GtkApplication* application, gpointer) {
     gtk_grid_set_column_homogeneous(GTK_GRID(overview), TRUE);
     gtk_grid_attach(GTK_GRID(overview), card("Device", "The connected receiver and HID++ endpoint.", device_grid), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(overview), card("Onboard profile", "The profile stored inside the mouse or receiver.", profile_grid), 1, 0, 1, 1);
-    gtk_box_append(GTK_BOX(hero), overview);
     gtk_box_append(GTK_BOX(overview_page), hero);
+    gtk_box_append(GTK_BOX(overview_page), overview);
 
     GtkWidget* sensitivity_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     GtkWidget* sensitivity_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
@@ -1202,11 +1289,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_box_append(GTK_BOX(sensitivity_box), dpi_columns);
     gtk_box_append(GTK_BOX(sensitivity_page), sensitivity_box);
 
-    GtkWidget* lighting_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    GtkWidget* lighting_heading = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_box_append(GTK_BOX(lighting_heading), label("LIGHTSYNC", "hero-title"));
-    gtk_box_append(GTK_BOX(lighting_heading), label("Control the live lighting effect and the settings stored by the device.", "lighting-caption"));
-    gtk_box_append(GTK_BOX(lighting_page), lighting_heading);
+    GtkWidget* lighting_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
 
     GtkWidget* lighting_columns = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(lighting_columns), 17);
@@ -1290,7 +1373,10 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_hexpand(battery_spacer, TRUE);
     gtk_box_append(GTK_BOX(battery_row), battery_spacer);
     state->lighting_battery = GTK_LABEL(label("Unavailable", "lighting-value"));
+    gtk_widget_set_hexpand(GTK_WIDGET(state->lighting_battery), TRUE);
     gtk_label_set_xalign(state->lighting_battery, 1.0f);
+    gtk_label_set_ellipsize(state->lighting_battery, PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars(state->lighting_battery, 34);
     gtk_box_append(GTK_BOX(battery_row), GTK_WIDGET(state->lighting_battery));
     gtk_box_append(GTK_BOX(lighting_visual), battery_row);
     GtkWidget* lighting_preview_overlay = gtk_overlay_new();
@@ -1363,23 +1449,17 @@ void activate(GtkApplication* application, gpointer) {
         GtkButton* category = GTK_BUTTON(gtk_button_new_with_label(categories[index]));
         gtk_widget_add_css_class(GTK_WIDGET(category), "mapping-category");
         if (index == 0) gtk_widget_add_css_class(GTK_WIDGET(category), "selected");
+        g_object_set_data(G_OBJECT(category), "mapping-category", GINT_TO_POINTER(static_cast<int>(index)));
         gtk_box_append(GTK_BOX(state->mapping_categories), GTK_WIDGET(category));
         g_signal_connect(category, "clicked", G_CALLBACK(mapping_category_clicked), state);
     }
     gtk_box_append(GTK_BOX(mapping_editor), state->mapping_categories);
-    gtk_box_append(GTK_BOX(mapping_editor), label("Choose a command and assign it to the selected control.", "section-caption"));
-    GtkWidget* command_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(command_grid), 5);
-    gtk_grid_set_column_spacing(GTK_GRID(command_grid), 5);
-    const std::array<const char*, 7> commands = {"Primary click", "Secondary click", "Middle click", "Back", "Forward", "DPI cycle", "F13"};
-    for (std::size_t index = 0; index < commands.size(); ++index) {
-        GtkButton* command = GTK_BUTTON(gtk_button_new_with_label(commands[index]));
-        gtk_widget_add_css_class(GTK_WIDGET(command), "command-button");
-        g_object_set_data(G_OBJECT(command), "mapping-command", GINT_TO_POINTER(static_cast<int>(index + 1)));
-        g_signal_connect(command, "clicked", G_CALLBACK(mapping_command_clicked), state);
-        gtk_grid_attach(GTK_GRID(command_grid), GTK_WIDGET(command), static_cast<int>(index % 2), static_cast<int>(index / 2), 1, 1);
-    }
-    gtk_box_append(GTK_BOX(mapping_editor), command_grid);
+    gtk_box_append(GTK_BOX(mapping_editor), label("Drag an item onto a control, or click it to assign it.", "section-caption"));
+    state->mapping_commands = GTK_GRID(gtk_grid_new());
+    gtk_grid_set_row_spacing(state->mapping_commands, 5);
+    gtk_grid_set_column_spacing(state->mapping_commands, 5);
+    gtk_box_append(GTK_BOX(mapping_editor), GTK_WIDGET(state->mapping_commands));
+    populate_mapping_commands(state, 0);
     GtkWidget* mapping_columns = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(mapping_columns), 17);
     gtk_grid_set_column_homogeneous(GTK_GRID(mapping_columns), FALSE);
@@ -1420,9 +1500,9 @@ void activate(GtkApplication* application, gpointer) {
     g_signal_connect(state->dpi_profile_save, "clicked", G_CALLBACK(dpi_profile_apply_clicked), state);
     g_signal_connect(state->dpi_profile_default, "clicked", G_CALLBACK(dpi_profile_default_clicked), state);
     start_snapshot_read(state);
-    state->refresh_source = g_timeout_add_seconds(5, [](gpointer data) -> gboolean {
+    state->refresh_source = g_timeout_add_seconds(15, [](gpointer data) -> gboolean {
         auto* state = static_cast<UiState*>(data);
-        if (!state->busy) start_snapshot_read(state);
+        if (!state->busy) start_snapshot_read(state, true);
         return G_SOURCE_CONTINUE;
     }, state);
     state->lighting_animation_source = g_timeout_add(33, lighting_animation_tick, state);

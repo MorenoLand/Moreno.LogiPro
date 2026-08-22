@@ -286,6 +286,7 @@ std::optional<logipro::HidppLightingInfo> read_lighting_state(HANDLE handle, con
                 if (!effect_info || effect_info->size() < 4) continue;
                 state.effect_ids.push_back(static_cast<std::uint16_t>(effect_info->at(2) << 8 | effect_info->at(3)));
             }
+            state.effect_count = static_cast<std::uint8_t>(state.effect_ids.size());
         }
         if ((result.extended_capabilities & 0x0001) != 0) {
             const auto effect = call(handle, device, device_index, feature_index, 0xe0, {zone, 0x00, 0x00});

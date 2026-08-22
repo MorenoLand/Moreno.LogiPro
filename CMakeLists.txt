@@ -82,6 +82,7 @@ add_executable(logipro WIN32
     "${LOGIPRO_GUI_RESOURCE_SOURCE}"
 )
 if(WIN32)
+    set_property(SOURCE gui/logipro.rc APPEND PROPERTY OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/logitech-g.ico")
     target_sources(logipro PRIVATE gui/logipro.rc)
 endif()
 target_link_libraries(logipro PRIVATE logipro_core PkgConfig::GTK4)
