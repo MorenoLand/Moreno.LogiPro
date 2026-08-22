@@ -130,6 +130,7 @@ int set_onboard_dpi(std::uint8_t slot, std::uint16_t dpi);
 int set_onboard_default_dpi(std::uint8_t slot);
 int set_lighting_effect(std::uint16_t effect_id);
 int set_lighting_effect_settings(std::uint16_t effect_id, std::uint16_t period_ms, std::uint8_t brightness);
+int set_lighting_zone_effect_settings(std::uint8_t zone, std::uint16_t effect_id, std::uint16_t period_ms, std::uint8_t brightness);
 int set_lighting_software_control(bool enabled);
 int restore_onboard_profile();
 int disable_onboard_lighting();

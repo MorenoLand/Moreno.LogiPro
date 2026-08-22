@@ -486,6 +486,36 @@ bool set_lighting_effect_state(HANDLE handle, const logipro::HidDeviceInfo& devi
     return success && released;
 }
 
+bool set_lighting_zone_effect_state(HANDLE handle, const logipro::HidDeviceInfo& device, std::uint8_t device_index, const logipro::HidppLightingInfo& lighting, std::size_t zone_index, std::uint16_t effect_id, std::uint16_t period_ms, std::uint8_t brightness) {
+    if (!lighting.readable || !lighting.software_control_readable || zone_index >= lighting.zones.size()) return false;
+    const auto& zone = lighting.zones[zone_index];
+    const auto effect = std::find(zone.effect_ids.begin(), zone.effect_ids.end(), effect_id);
+    if (effect == zone.effect_ids.end()) return false;
+    if (!call(handle, device, device_index, lighting.feature_index, 0x80, {0x01, lighting.sync_events, 0x00})) return false;
+    std::vector<std::uint8_t> parameters(13);
+    parameters[0] = zone.requested_zone;
+    parameters[1] = static_cast<std::uint8_t>(std::distance(zone.effect_ids.begin(), effect));
+    if (effect_id == 1 || effect_id == 10 || effect_id == 11) {
+        parameters[2] = 0xff;
+        parameters[3] = 0x80;
+        parameters[4] = 0x20;
+    }
+    const auto period = static_cast<std::uint16_t>(std::clamp<unsigned int>(period_ms, 100, 60000));
+    const auto intensity = brightness >= 100 ? 0 : brightness;
+    if (effect_id == 3 || effect_id == 10) {
+        parameters[7] = static_cast<std::uint8_t>(period >> 8);
+        parameters[8] = static_cast<std::uint8_t>(period);
+        parameters[9] = intensity;
+    } else if (effect_id == 11) {
+        parameters[7] = static_cast<std::uint8_t>(period >> 8);
+        parameters[8] = static_cast<std::uint8_t>(period);
+    }
+    parameters[12] = 1;
+    const bool success = call(handle, device, device_index, lighting.feature_index, 0x30, parameters).has_value();
+    const bool released = call(handle, device, device_index, lighting.feature_index, 0x80, {lighting.software_control, lighting.sync_events, 0x00}).has_value();
+    return success && released;
+}
+
 bool set_lighting_effect(HANDLE handle, const logipro::HidDeviceInfo& device, std::uint8_t device_index, const logipro::HidppLightingInfo& lighting, std::uint16_t effect_id) {
     return set_lighting_effect_state(handle, device, device_index, lighting, effect_id, 8000, 100);
 }
@@ -976,6 +1006,23 @@ int set_lighting_effect_settings(std::uint16_t effect_id, std::uint16_t period_m
     return 1;
 }
 
+int set_lighting_zone_effect_settings(std::uint8_t zone, std::uint16_t effect_id, std::uint16_t period_ms, std::uint8_t brightness) {
+    ScopedOutputSilencer silencer;
+    const auto interfaces = logipro::enumerate_logitech_hid();
+    for (const auto& interface : interfaces) {
+        if (interface.product_id != receiver_product_id && interface.product_id != 0xc088 && interface.product_id != 0x4079) continue;
+        const std::uint8_t first_index = interface.product_id == receiver_product_id ? 1 : direct_device_index;
+        const std::uint8_t last_index = interface.product_id == receiver_product_id ? 6 : direct_device_index;
+        for (std::uint8_t device_index = first_index; device_index <= last_index; ++device_index) {
+            const auto device = probe_interface(interface, device_index);
+            if (!device || !device->lighting.readable || !device->lighting.software_control_readable || zone >= device->lighting.zones.size()) continue;
+            const auto connection = open_connection(interface.path);
+            if (connection && set_lighting_zone_effect_state(connection->get(), interface, device_index, device->lighting, zone, effect_id, period_ms, brightness)) return 0;
+        }
+    }
+    return 1;
+}
+
 int set_lighting_software_control(bool enabled) {
     ScopedOutputSilencer silencer;
     const auto interfaces = logipro::enumerate_logitech_hid();
@@ -1033,6 +1080,10 @@ int set_lighting_effect(std::uint16_t) {
 }
 
 int set_lighting_effect_settings(std::uint16_t, std::uint16_t, std::uint8_t) {
+    return 1;
+}
+
+int set_lighting_zone_effect_settings(std::uint8_t, std::uint16_t, std::uint16_t, std::uint8_t) {
     return 1;
 }
 

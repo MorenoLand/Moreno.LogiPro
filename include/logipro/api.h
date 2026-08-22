@@ -146,6 +146,7 @@ LOGIPRO_C_API int logipro_dpi_set(uint8_t sensor, uint16_t dpi);
 LOGIPRO_C_API int logipro_profile_dpi_set(uint8_t slot, uint16_t dpi);
 LOGIPRO_C_API int logipro_profile_dpi_set_default(uint8_t slot);
 LOGIPRO_C_API int logipro_lighting_set_effect(uint16_t effect_id, uint16_t period_ms, uint8_t brightness);
+LOGIPRO_C_API int logipro_lighting_set_zone_effect(uint8_t zone, uint16_t effect_id, uint16_t period_ms, uint8_t brightness);
 LOGIPRO_C_API int logipro_lighting_set_software_control(uint8_t enabled);
 LOGIPRO_C_API int logipro_profile_restore(void);
 LOGIPRO_C_API int logipro_profile_lighting_off(void);

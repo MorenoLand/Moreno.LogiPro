@@ -375,6 +375,18 @@ int logipro_lighting_set_effect(uint16_t effect_id, uint16_t period_ms, uint8_t 
     }
 }
 
+int logipro_lighting_set_zone_effect(uint8_t zone, uint16_t effect_id, uint16_t period_ms, uint8_t brightness) {
+    clear_error();
+    if (period_ms == 0 || brightness > 100) return fail(LOGIPRO_INVALID_ARGUMENT, "Lighting period must be greater than zero and brightness must be 0-100.");
+    try {
+        return operation_result(logipro::set_lighting_zone_effect_settings(zone, effect_id, period_ms, brightness));
+    } catch (const std::exception& error) {
+        return fail(LOGIPRO_INTERNAL_ERROR, error.what());
+    } catch (...) {
+        return fail(LOGIPRO_INTERNAL_ERROR, "Unknown zone lighting-effect operation error.");
+    }
+}
+
 int logipro_lighting_set_software_control(uint8_t enabled) {
     clear_error();
     if (enabled > 1) return fail(LOGIPRO_INVALID_ARGUMENT, "Lighting software control must be 0 or 1.");

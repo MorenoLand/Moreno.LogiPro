@@ -82,6 +82,8 @@ struct UiState {
     std::array<std::uint16_t, 16> lighting_effect_ids{};
     std::size_t lighting_effect_count = 0;
     std::uint16_t lighting_preview_effect = 0;
+    std::size_t lighting_zone = 0;
+    bool lighting_model_updating = false;
     double lighting_phase = 0;
     guint refresh_source = 0;
     guint lighting_animation_source = 0;
@@ -122,6 +124,8 @@ struct LightingOperation {
     std::uint16_t period_ms = 8000;
     std::uint8_t brightness = 100;
     bool enabled = false;
+    std::uint8_t zone = 0;
+    bool all_zones = false;
 };
 
 bool has_flag(int argc, char* const argv[], std::string_view flag) {
@@ -213,6 +217,7 @@ std::string lighting_effect_name(std::uint16_t effect_id) {
 
 void update_lighting_effect_model(UiState* state, const std::array<std::uint16_t, 16>& ids, std::size_t count, std::size_t selected) {
     if (state->lighting_effect == nullptr) return;
+    state->lighting_model_updating = true;
     state->lighting_effect_ids = ids;
     state->lighting_effect_count = std::min(count, state->lighting_effect_ids.size());
     std::vector<std::string> names;
@@ -228,6 +233,7 @@ void update_lighting_effect_model(UiState* state, const std::array<std::uint16_t
     gtk_drop_down_set_model(state->lighting_effect, G_LIST_MODEL(model));
     gtk_drop_down_set_selected(state->lighting_effect, state->lighting_effect_count == 0 ? 0 : static_cast<guint>(std::min(selected, state->lighting_effect_count - 1)));
     g_object_unref(model);
+    state->lighting_model_updating = false;
 }
 
 std::string hid_key_name(std::uint8_t key) {
@@ -416,49 +422,32 @@ void update_dpi_view(UiState* state, const logipro_snapshot_t* snapshot, const l
     update_dpi_controls(state);
 }
 
-bool lighting_zone_supports(const logipro_snapshot_t* snapshot, std::size_t zone_index, std::uint16_t effect_id) {
-    logipro_lighting_zone_info_t zone{};
-    if (logipro_snapshot_get_lighting_zone(snapshot, 0, zone_index, &zone) != LOGIPRO_OK || zone.effect_count == 0) return false;
-    for (std::size_t index = 0; index < zone.effect_count; ++index) {
-        std::uint16_t candidate = 0;
-        if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, zone_index, index, &candidate) == LOGIPRO_OK && candidate == effect_id) return true;
-    }
-    return false;
-}
-
 void update_lighting_view(UiState* state, const logipro_snapshot_t* snapshot, const logipro_device_info_t& device) {
     set_text(state->lighting_battery, battery_text(device));
     state->lighting_controls_available = false;
-    std::array<std::uint16_t, 16> common{};
-    std::size_t common_count = 0;
     std::uint16_t current_effect = 0;
-    logipro_lighting_zone_info_t primary{};
-    if (device.lighting_readable && device.lighting_zone_records > 0 && logipro_snapshot_get_lighting_zone(snapshot, 0, 0, &primary) == LOGIPRO_OK && primary.effect_count > 0) {
-        current_effect = primary.effect_readable ? primary.effect : 0;
-        for (std::size_t index = 0; index < primary.effect_count && common_count < common.size(); ++index) {
+    const std::size_t zone_index = device.lighting_zone_records == 0 ? 0 : std::min(state->lighting_zone, device.lighting_zone_records - 1);
+    logipro_lighting_zone_info_t zone{};
+    if (device.lighting_readable && device.lighting_zone_records > 0 && logipro_snapshot_get_lighting_zone(snapshot, 0, zone_index, &zone) == LOGIPRO_OK && zone.effect_count > 0) {
+        std::array<std::uint16_t, 16> effects{};
+        std::size_t effect_count = 0;
+        for (std::size_t index = 0; index < zone.effect_count && effect_count < effects.size(); ++index) {
             std::uint16_t effect_id = 0;
-            if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, 0, index, &effect_id) != LOGIPRO_OK || std::find(common.begin(), common.begin() + common_count, effect_id) != common.begin() + common_count) continue;
-            if (!primary.effect_readable && index == 0) current_effect = effect_id;
-            bool supported = true;
-            for (std::size_t zone = 1; zone < device.lighting_zone_records; ++zone) {
-                if (!lighting_zone_supports(snapshot, zone, effect_id)) {
-                    supported = false;
-                    break;
-                }
-            }
-            if (supported) common[common_count++] = effect_id;
+            if (logipro_snapshot_get_lighting_effect_id(snapshot, 0, zone_index, index, &effect_id) != LOGIPRO_OK || std::find(effects.begin(), effects.begin() + effect_count, effect_id) != effects.begin() + effect_count) continue;
+            effects[effect_count++] = effect_id;
         }
-        state->lighting_controls_available = device.lighting_software_control_readable && common_count > 0;
+        current_effect = zone.effect_readable ? zone.effect : (effect_count == 0 ? 0 : effects[0]);
+        state->lighting_controls_available = device.lighting_software_control_readable && effect_count > 0;
         std::size_t selected = 0;
-        for (std::size_t index = 0; index < common_count; ++index) if (common[index] == current_effect) selected = index;
-        update_lighting_effect_model(state, common, common_count, selected);
+        for (std::size_t index = 0; index < effect_count; ++index) if (effects[index] == current_effect) selected = index;
+        update_lighting_effect_model(state, effects, effect_count, selected);
         state->lighting_preview_effect = current_effect;
-        set_text(state->lighting_effect_hint, std::to_string(device.lighting_zone_records) + " zones • " + lighting_effect_name(current_effect));
+        set_text(state->lighting_effect_hint, std::string(zone_index == 0 ? "Primary" : "Logo") + " • " + std::to_string(effect_count) + " effects • " + lighting_effect_name(current_effect));
         unsigned int period = 8000;
         unsigned int brightness = 100;
         if (current_effect == 3 || current_effect == 10 || current_effect == 11) {
-            period = (static_cast<unsigned int>(primary.effect_parameters[5]) << 8) | primary.effect_parameters[6];
-            brightness = primary.effect_parameters[7] == 0 ? 100 : primary.effect_parameters[7];
+            period = (static_cast<unsigned int>(zone.effect_parameters[5]) << 8) | zone.effect_parameters[6];
+            brightness = zone.effect_parameters[7] == 0 ? 100 : zone.effect_parameters[7];
         }
         period = std::clamp(period, 100u, 60000u);
         brightness = std::min(brightness, 100u);
@@ -467,7 +456,7 @@ void update_lighting_view(UiState* state, const logipro_snapshot_t* snapshot, co
         set_text(state->lighting_rate_value, std::to_string(period) + " ms");
         set_text(state->lighting_brightness_value, std::to_string(brightness) + "%");
     } else {
-        update_lighting_effect_model(state, common, 0, 0);
+        update_lighting_effect_model(state, {}, 0, 0);
         state->lighting_preview_effect = 0;
         set_text(state->lighting_effect_hint, "No live lighting effects reported");
         gtk_range_set_value(GTK_RANGE(state->lighting_rate), 8000);
@@ -620,7 +609,7 @@ void start_lighting_operation(UiState* state, const LightingOperation& operation
     g_task_set_task_data(task, new LightingOperation(operation), destroy_lighting_operation);
     g_task_run_in_thread(task, [](GTask* task, gpointer, gpointer task_data, GCancellable*) {
         const auto& operation = *static_cast<LightingOperation*>(task_data);
-        const int result = operation.kind == LightingOperationKind::Effect ? logipro_lighting_set_effect(operation.effect_id, operation.period_ms, operation.brightness) : logipro_lighting_set_software_control(operation.enabled ? 1 : 0);
+        const int result = operation.kind == LightingOperationKind::Effect ? (operation.all_zones ? logipro_lighting_set_effect(operation.effect_id, operation.period_ms, operation.brightness) : logipro_lighting_set_zone_effect(operation.zone, operation.effect_id, operation.period_ms, operation.brightness)) : logipro_lighting_set_software_control(operation.enabled ? 1 : 0);
         g_task_return_int(task, result);
     });
     g_object_unref(task);
@@ -633,7 +622,7 @@ void lighting_sync_clicked(GtkButton*, gpointer data) {
     if (selected >= state->lighting_effect_count) return;
     const auto period = static_cast<std::uint16_t>(std::clamp(std::lround(gtk_range_get_value(GTK_RANGE(state->lighting_rate))), 100l, 60000l));
     const auto brightness = static_cast<std::uint8_t>(std::clamp(std::lround(gtk_range_get_value(GTK_RANGE(state->lighting_brightness))), 0l, 100l));
-    start_lighting_operation(state, {LightingOperationKind::Effect, state->lighting_effect_ids[selected], period, brightness, false}, "Updating lighting");
+    start_lighting_operation(state, {LightingOperationKind::Effect, state->lighting_effect_ids[selected], period, brightness, false, 0, true}, "Updating lighting");
 }
 
 void lighting_effect_changed(GObject*, GParamSpec*, gpointer data) {
@@ -643,6 +632,24 @@ void lighting_effect_changed(GObject*, GParamSpec*, gpointer data) {
     if (selected >= state->lighting_effect_count) return;
     state->lighting_preview_effect = state->lighting_effect_ids[selected];
     if (state->lighting_preview != nullptr) gtk_widget_queue_draw(GTK_WIDGET(state->lighting_preview));
+    if (state->lighting_model_updating || state->busy) return;
+    const auto period = static_cast<std::uint16_t>(std::clamp(std::lround(gtk_range_get_value(GTK_RANGE(state->lighting_rate))), 100l, 60000l));
+    const auto brightness = static_cast<std::uint8_t>(std::clamp(std::lround(gtk_range_get_value(GTK_RANGE(state->lighting_brightness))), 0l, 100l));
+    start_lighting_operation(state, {LightingOperationKind::Effect, state->lighting_effect_ids[selected], period, brightness, false, static_cast<std::uint8_t>(state->lighting_zone), false}, "Updating lighting");
+}
+
+void lighting_zone_clicked(GtkButton* button, gpointer data) {
+    auto* state = static_cast<UiState*>(data);
+    const auto zone = static_cast<std::size_t>(GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "lighting-zone")));
+    if (state->lighting_zone == zone || state->busy) return;
+    state->lighting_zone = zone;
+    GtkWidget* sibling = gtk_widget_get_first_child(gtk_widget_get_parent(GTK_WIDGET(button)));
+    while (sibling != nullptr) {
+        gtk_widget_remove_css_class(sibling, "selected");
+        sibling = gtk_widget_get_next_sibling(sibling);
+    }
+    gtk_widget_add_css_class(GTK_WIDGET(button), "selected");
+    start_snapshot_read(state);
 }
 
 gboolean lighting_windows_changed(GtkSwitch*, gboolean active, gpointer data) {
@@ -1147,10 +1154,10 @@ void activate(GtkApplication* application, gpointer) {
     gtk_window_set_resizable(window, FALSE);
     GtkWidget* header = gtk_header_bar_new();
     GtkWidget* heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget* logo = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/logitech-g.png");
+    GtkWidget* logo = gtk_picture_new_for_resource("/com/morenoland/logipro/assets/logitech-g.svg");
     gtk_picture_set_content_fit(GTK_PICTURE(logo), GTK_CONTENT_FIT_CONTAIN);
     gtk_picture_set_can_shrink(GTK_PICTURE(logo), TRUE);
-    gtk_widget_set_size_request(logo, 16, 16);
+    gtk_widget_set_size_request(logo, 22, 22);
     gtk_widget_set_valign(logo, GTK_ALIGN_CENTER);
     gtk_widget_set_tooltip_text(logo, "Logitech");
     gtk_box_append(GTK_BOX(heading), logo);
@@ -1315,6 +1322,10 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_add_css_class(logo_zone, "lighting-tab");
     gtk_widget_set_can_focus(primary_zone, FALSE);
     gtk_widget_set_can_focus(logo_zone, FALSE);
+    g_object_set_data(G_OBJECT(primary_zone), "lighting-zone", GINT_TO_POINTER(0));
+    g_object_set_data(G_OBJECT(logo_zone), "lighting-zone", GINT_TO_POINTER(1));
+    g_signal_connect(primary_zone, "clicked", G_CALLBACK(lighting_zone_clicked), state);
+    g_signal_connect(logo_zone, "clicked", G_CALLBACK(lighting_zone_clicked), state);
     gtk_box_append(GTK_BOX(zone_row), primary_zone);
     gtk_box_append(GTK_BOX(zone_row), logo_zone);
     gtk_box_append(GTK_BOX(lighting_controls), zone_row);
@@ -1326,7 +1337,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_set_hexpand(GTK_WIDGET(state->lighting_effect), TRUE);
     gtk_box_append(GTK_BOX(lighting_controls), GTK_WIDGET(state->lighting_effect));
     update_lighting_effect_model(state, {}, 0, 0);
-    gtk_box_append(GTK_BOX(lighting_controls), label("Effects and controls are limited to capabilities shared by the lighting zones.", "lighting-note"));
+    gtk_box_append(GTK_BOX(lighting_controls), label("Select a zone, then choose its effect. Sync applies it to every zone.", "lighting-note"));
 
     GtkWidget* rate_heading = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_append(GTK_BOX(rate_heading), label("EFFECT RATE", "dpi-caption"));
@@ -1364,7 +1375,7 @@ void activate(GtkApplication* application, gpointer) {
     gtk_widget_add_css_class(GTK_WIDGET(state->lighting_off), "destructive-action");
     gtk_box_append(GTK_BOX(lighting_actions), GTK_WIDGET(state->lighting_off));
     gtk_box_append(GTK_BOX(lighting_controls), lighting_actions);
-    gtk_grid_attach(GTK_GRID(lighting_columns), card("Lighting controls", "The same live effect is applied to every compatible zone.", lighting_controls), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(lighting_columns), card("Lighting controls", "Tune the selected lighting zone.", lighting_controls), 0, 0, 1, 1);
 
     GtkWidget* lighting_visual = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     GtkWidget* battery_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);

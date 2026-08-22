@@ -72,6 +72,7 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-real.png"
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/pro-wireless-hero.png"
         "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/logitech-g.png"
+        "${CMAKE_CURRENT_SOURCE_DIR}/gui/assets/logitech-g.svg"
     VERBATIM
 )
 add_executable(logipro WIN32
